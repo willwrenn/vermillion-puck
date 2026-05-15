@@ -1,0 +1,6 @@
+/* Device tree overlay: add CDC ACM UART to the nRF52840 USB device */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

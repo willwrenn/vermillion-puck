@@ -1,0 +1,57 @@
+cmake:
+  application:
+    configuration-dir: '/home/blaise/csse4011/firmware/finalproject/vermillion-puck/controller'
+    source-dir: '/home/blaise/csse4011/firmware/finalproject/vermillion-puck/controller'
+  board:
+    name: 'xiao_ble'
+    path:
+     - '/home/blaise/csse4011/zephyr/boards/seeed/xiao_ble'
+    qualifiers: 'nrf52840/sense'
+    revision: ''
+  devicetree:
+    bindings-dirs:
+     - '/home/blaise/csse4011/firmware/dts/bindings'
+     - '/home/blaise/csse4011/zephyr/dts/bindings'
+    files:
+     - '/home/blaise/csse4011/zephyr/boards/seeed/xiao_ble/xiao_ble_nrf52840_sense.dts'
+     - '/home/blaise/csse4011/firmware/finalproject/vermillion-puck/controller/app.overlay'
+    include-dirs:
+     - '/home/blaise/csse4011/firmware/include'
+     - '/home/blaise/csse4011/firmware/dts'
+     - '/home/blaise/csse4011/modules/hal/stm32/dts'
+     - '/home/blaise/csse4011/zephyr/include'
+     - '/home/blaise/csse4011/zephyr/include/zephyr'
+     - '/home/blaise/csse4011/zephyr/dts/common'
+     - '/home/blaise/csse4011/zephyr/dts/vendor'
+     - '/home/blaise/csse4011/zephyr/dts/rx'
+     - '/home/blaise/csse4011/zephyr/dts/x86'
+     - '/home/blaise/csse4011/zephyr/dts/xtensa'
+     - '/home/blaise/csse4011/zephyr/dts/sparc'
+     - '/home/blaise/csse4011/zephyr/dts/riscv'
+     - '/home/blaise/csse4011/zephyr/dts/posix'
+     - '/home/blaise/csse4011/zephyr/dts/arm64'
+     - '/home/blaise/csse4011/zephyr/dts/arm'
+     - '/home/blaise/csse4011/zephyr/dts/arc'
+     - '/home/blaise/csse4011/zephyr/dts'
+    user-files:
+     - '/home/blaise/csse4011/firmware/finalproject/vermillion-puck/controller/app.overlay'
+  kconfig:
+    files:
+     - '/home/blaise/csse4011/zephyr/boards/seeed/xiao_ble/xiao_ble_nrf52840_sense_defconfig'
+     - '/home/blaise/csse4011/firmware/finalproject/vermillion-puck/controller/prj.conf'
+    user-files:
+     - '/home/blaise/csse4011/firmware/finalproject/vermillion-puck/controller/prj.conf'
+  toolchain:
+    name: 'zephyr'
+    path: '/home/blaise/zephyr-sdk-0.17.4'
+  vendor-specific:
+    nordic:
+      svdfile: '/home/blaise/csse4011/modules/hal/nordic/nrfx/mdk/nrf52840.svd'
+  zephyr:
+    version: '4.3.0'
+    zephyr-base: '/home/blaise/csse4011/zephyr'
+version: '0.1.0'
+west:
+  command: '/home/blaise/csse4011/.venv/bin/west build -p -b xiao_ble/nrf52840/sense -d firmware/finalproject/vermillion-puck/controller/build firmware/finalproject/vermillion-puck/controller'
+  topdir: '/home/blaise/csse4011'
+  version: '1.5.0'

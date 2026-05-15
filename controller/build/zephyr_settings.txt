@@ -1,0 +1,11 @@
+# WARNING. THIS FILE IS AUTO-GENERATED. DO NOT MODIFY!
+#
+# This file contains build system settings derived from your modules.
+#
+# Modules may be set via ZEPHYR_MODULES, ZEPHYR_EXTRA_MODULES,
+# and/or the west manifest file.
+#
+# See the Modules guide for more information.
+"BOARD_ROOT":"/home/blaise/csse4011/firmware"
+"DTS_ROOT":"/home/blaise/csse4011/firmware"
+"DTS_ROOT":"/home/blaise/csse4011/modules/hal/stm32"
