@@ -17,6 +17,7 @@
 #include "bridge.h"
 #include "aircraft_db.h"
 #include "db_publisher.h"
+#include "collision.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
@@ -47,6 +48,11 @@ int main(void)
 	err = db_publisher_init();
 	if (err) {
 		LOG_ERR("db_publisher_init failed: %d", err);
+	}
+
+	err = collision_init();
+	if (err) {
+		LOG_ERR("collision_init failed: %d", err);
 	}
 
 	LOG_INF("SkyWatch controller up — shell on ACM0, data port on ACM1, BLE central scanning");

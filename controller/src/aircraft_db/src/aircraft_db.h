@@ -22,14 +22,23 @@
 #include <zephyr/sys/slist.h>
 
 #include "aircraft_t.h"
+#include "kalman.h"
 
 #define AIRCRAFT_DB_MAX_ENTRIES    32
 #define AIRCRAFT_DB_STALE_MS       10000   /* per plan: 10 s */
 
+/* Pred is published once the KF has seen at least this many measurements. */
+#define AIRCRAFT_PRED_MIN_UPDATES  3
+/* How many seconds ahead the published `pred_lat / pred_lon` projects.
+ * 60 s @ ~250 kt = ~7.7 km — visible on a ±0.5° (≈55 km) map without being
+ * silly. Bump higher for ARTCC-style centre views, lower for terminal. */
+#define AIRCRAFT_PRED_HORIZON_S    60.0
+
 struct aircraft_db_entry {
-	sys_snode_t       node;
-	struct aircraft_t ac;
-	int64_t           last_seen_ms;  /* k_uptime_get() at last upsert */
+	sys_snode_t          node;
+	struct aircraft_t    ac;
+	int64_t              last_seen_ms;  /* k_uptime_get() at last upsert */
+	struct kalman_state  kf;            /* per-aircraft KF state */
 };
 
 void aircraft_db_init(void);

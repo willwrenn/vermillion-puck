@@ -39,7 +39,8 @@ static struct bridge_stats g_stats;
 static struct k_spinlock   stats_lock;
 
 /* ---- Synchronous converter: BLE frame -> aircraft_t ------------------ */
-
+//Purpose: This function converts a `ble_aircraft_frame` 
+// (the raw data format received from the BLE characteristic)
 int bridge_convert(const struct ble_aircraft_frame *in, struct aircraft_t *out)
 {
 	if (!in || !out) {
@@ -85,7 +86,8 @@ int bridge_convert(const struct ble_aircraft_frame *in, struct aircraft_t *out)
 }
 
 /* ---- Producer side: called from BLE notify callback ------------------ */
-
+//Purpose: This function is called from the BLE notify callback
+//  when a new frame is received.
 void bridge_submit_frame(const struct ble_aircraft_frame *frame)
 {
 	if (!frame) {
@@ -98,7 +100,8 @@ void bridge_submit_frame(const struct ble_aircraft_frame *frame)
 }
 
 /* ---- Consumer thread: drains msgq, converts, logs -------------------- */
-
+//Purpose: This function is run by the bridge thread. 
+// It waits for frames to be submitted to the message queue,
 static void bridge_thread_fn(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
@@ -124,18 +127,20 @@ static void bridge_thread_fn(void *a, void *b, void *c)
 	}
 }
 
+//Pur[pse: Spawn the bridge thread. This is called at SYS_INIT
+//  after the kernel is up.]
 K_THREAD_DEFINE(bridge_tid, BRIDGE_STACK, bridge_thread_fn,
 		NULL, NULL, NULL, BRIDGE_PRIO, 0, 0);
 
 /* ---- API ------------------------------------------------------------- */
-
+//Purpose: This function initializes the BLE central.
 int bridge_init(void)
 {
 	memset(&g_stats, 0, sizeof(g_stats));
 	/* Thread auto-started via K_THREAD_DEFINE. */
 	return 0;
 }
-
+//Purpose: Get the current stats counters for the bridge.
 void bridge_get_stats(struct bridge_stats *out)
 {
 	K_SPINLOCK(&stats_lock) {

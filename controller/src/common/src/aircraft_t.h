@@ -22,13 +22,24 @@
 #define AIRCRAFT_VALID_ALT         (1u << 0)
 #define AIRCRAFT_VALID_VEL         (1u << 1)
 #define AIRCRAFT_VALID_HDG         (1u << 2)
+/* Stage 7.2: set once the Kalman filter for this aircraft has had >=3
+ * updates and `pred_lat/pred_lon` are meaningful. */
+#define AIRCRAFT_VALID_PRED        (1u << 3)
 
+//Purpose: This enum represents the source of the aircraft data.
+//   ADS_B   = real flight from dump1090
+//   BLE_SIM = Will's mobile sim node
+//   FICT    = fictitious / test scaffold (`skywatch collision inject`,
+//             future `ghost`, anything else synthetic — clearly marked
+//             so they're never confused with live traffic)
 enum aircraft_source {
 	SRC_UNKNOWN = 0,
 	SRC_ADS_B   = 1,
 	SRC_BLE_SIM = 2,
+	SRC_FICT    = 3,
 };
 
+//Purpose: This struct represents an aircraft record in the controller.
 struct aircraft_t {
 	char     icao[AIRCRAFT_ICAO_BUF_LEN]; /* lowercase hex, NUL-terminated */
 	double   lat;          /* WGS-84 degrees */
@@ -39,13 +50,18 @@ struct aircraft_t {
 	int32_t  alt_ft;       /* valid only if AIRCRAFT_VALID_ALT */
 	double   vel_kt;       /* valid only if AIRCRAFT_VALID_VEL */
 	double   hdg_deg;      /* valid only if AIRCRAFT_VALID_HDG; 0..360 */
+	double   pred_lat;     /* Kalman 10s-ahead lat — valid if AIRCRAFT_VALID_PRED */
+	double   pred_lon;     /* Kalman 10s-ahead lon — valid if AIRCRAFT_VALID_PRED */
 };
 
+
+//Purpose: This function returns a string representation of the aircraft source enum value.
 static inline const char *aircraft_source_str(enum aircraft_source s)
 {
 	switch (s) {
 	case SRC_ADS_B:   return "ADS_B";
 	case SRC_BLE_SIM: return "BLE_SIM";
+	case SRC_FICT:    return "FICT";
 	default:          return "UNKNOWN";
 	}
 }

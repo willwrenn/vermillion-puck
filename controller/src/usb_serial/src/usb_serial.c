@@ -19,6 +19,13 @@ LOG_MODULE_REGISTER(usb_serial, LOG_LEVEL_INF);
 static const struct device *g_data_uart =
 	DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
 
+/* Serialises concurrent writers to the data UART. Multiple threads call
+ * `usb_serial_println()` (db_publisher work-queue + collision work-queue at
+ * minimum; future MQTT publisher will too). Without this, byte-by-byte
+ * `uart_poll_out` calls interleave at character granularity and the GUI
+ * sees corrupted JSON lines. */
+static K_MUTEX_DEFINE(g_tx_mutex);
+
 // checks the data UART is ready and logs where things will come out
 int usb_serial_init(void)
 {
@@ -43,8 +50,10 @@ void usb_serial_println(const char *str)
 		return;
 	}
 
+	k_mutex_lock(&g_tx_mutex, K_FOREVER);
 	for (const char *p = str; *p; p++) {
 		uart_poll_out(g_data_uart, (uint8_t)*p);
 	}
 	uart_poll_out(g_data_uart, '\n');
+	k_mutex_unlock(&g_tx_mutex);
 }

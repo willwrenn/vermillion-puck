@@ -32,8 +32,10 @@ LOG_MODULE_REGISTER(ble_central, LOG_LEVEL_INF);
 #define DEVICE_NAME_MAX     24
 
 /* --- UUIDs from common/ble_packet.h ----------------------------------- */
-static struct bt_uuid_128 sky_svc_uuid = BT_UUID_INIT_128(SKYWATCH_BLE_SERVICE_UUID_ENC);
-static struct bt_uuid_128 sky_chr_uuid = BT_UUID_INIT_128(SKYWATCH_BLE_AIRCRAFT_UUID_ENC);
+static struct bt_uuid_128 sky_svc_uuid  = BT_UUID_INIT_128(SKYWATCH_BLE_SERVICE_UUID_ENC);
+static struct bt_uuid_128 sky_chr_uuid  = BT_UUID_INIT_128(SKYWATCH_BLE_AIRCRAFT_UUID_ENC);
+static struct bt_uuid_128 warn_svc_uuid = BT_UUID_INIT_128(WARN_SVC_UUID_ENC);
+static struct bt_uuid_128 warn_chr_uuid = BT_UUID_INIT_128(WARN_CHR_UUID_ENC);
 
 /* --- Connection / discovery state ------------------------------------- */
 static struct bt_conn                  *g_conn;
@@ -42,6 +44,7 @@ static struct bt_gatt_subscribe_params  g_sub_params;
 static struct bt_gatt_exchange_params   g_mtu_params;
 
 static uint16_t g_aircraft_handle;
+static uint16_t g_warn_handle;
 static bool     g_scanning;
 static bool     g_connected;
 static bool     g_connecting;
@@ -64,12 +67,21 @@ static int64_t       g_last_attempt_ms;
 static struct ble_central_stats g_stats;
 static struct k_spinlock        stats_lock;
 
-/* --- Two-stage discovery state --------------------------------------- */
-enum disc_state { DISC_SVC, DISC_CHR };
+/* --- Discovery state machine (four stages) ---------------------------
+ *   DISC_SVC      → SkyWatch aircraft service
+ *   DISC_CHR      → aircraft characteristic; subscribe to NOTIFY here
+ *   DISC_WARN_SVC → Will's legacy warning service (ab340001-...)
+ *   DISC_WARN_CHR → warning characteristic; store value handle here
+ * Each stage transitions in `discover_cb` by re-arming g_disc_params and
+ * calling bt_gatt_discover again. */
+enum disc_state { DISC_SVC, DISC_CHR, DISC_WARN_SVC, DISC_WARN_CHR };
 static enum disc_state g_disc_state;
 
 /* --- NOTIFY callback: validate length, hand bytes to bridge ----------- */
-
+//Purpose: This function is called when a notification is received
+//  on the subscribed characteristic. It checks that the data length matches
+//  the expected BLE_FRAME_SIZE, and if so, it casts the data to a ble_aircraft_frame and submits it to the bridge.
+//  It also updates stats counters for received notifications, bad lengths, and submitted frames.
 static uint8_t notify_cb(struct bt_conn *conn,
 			  struct bt_gatt_subscribe_params *params,
 			  const void *data, uint16_t length)
@@ -99,7 +111,11 @@ static uint8_t notify_cb(struct bt_conn *conn,
 }
 
 /* --- Two-stage discovery: SkyWatch service -> aircraft char ----------- */
-
+//Purpose: This function is called during GATT discovery. 
+// It first looks for the SkyWatch service, and when found, 
+// it initiates a second discovery for the aircraft characteristic within that service. 
+// When the characteristic is found, it subscribes to notifications on that 
+// characteristic using the notify_cb defined above.
 static uint8_t discover_cb(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			   struct bt_gatt_discover_params *params)
 {
@@ -133,12 +149,42 @@ static uint8_t discover_cb(struct bt_conn *conn, const struct bt_gatt_attr *attr
 			LOG_INF("Subscribed to SkyWatch aircraft char (handle 0x%04x)",
 				g_aircraft_handle);
 		}
+
+		/* Now go after Will's warning service so we can write back to him. */
+		g_disc_state               = DISC_WARN_SVC;
+		g_disc_params.uuid         = &warn_svc_uuid.uuid;
+		g_disc_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
+		g_disc_params.end_handle   = BT_ATT_LAST_ATTRIBUTE_HANDLE;
+		g_disc_params.type         = BT_GATT_DISCOVER_PRIMARY;
+		int derr = bt_gatt_discover(conn, &g_disc_params);
+		if (derr) {
+			LOG_WRN("warn-svc discover: %d", derr);
+		}
+		return BT_GATT_ITER_STOP;
+	}
+
+	case DISC_WARN_SVC:
+		g_disc_state               = DISC_WARN_CHR;
+		g_disc_params.uuid         = &warn_chr_uuid.uuid;
+		g_disc_params.start_handle = attr->handle + 1;
+		g_disc_params.end_handle   = 0xffff;
+		g_disc_params.type         = BT_GATT_DISCOVER_CHARACTERISTIC;
+		bt_gatt_discover(conn, &g_disc_params);
+		return BT_GATT_ITER_STOP;
+
+	case DISC_WARN_CHR: {
+		struct bt_gatt_chrc *chrc = attr->user_data;
+		g_warn_handle             = chrc->value_handle;
+		LOG_INF("Warning characteristic ready (handle 0x%04x) — controller can now send warnings",
+			g_warn_handle);
 		return BT_GATT_ITER_STOP;
 	}
 	}
 	return BT_GATT_ITER_CONTINUE;
 }
 
+//Purpose: This function initiates the GATT discovery process by first looking 
+// for the SkyWatch service.
 static void start_discovery(struct bt_conn *conn)
 {
 	g_disc_state               = DISC_SVC;
@@ -154,7 +200,8 @@ static void start_discovery(struct bt_conn *conn)
 }
 
 /* --- MTU exchange ----------------------------------------------------- */
-
+//Purpose: This function is called when the MTU exchange process 
+// completes.
 static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
 			    struct bt_gatt_exchange_params *params)
 {
@@ -165,7 +212,8 @@ static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
 }
 
 /* --- Connect helper --------------------------------------------------- */
-
+//Purpose: This function attempts to connect to a device with the given
+//  address.
 static void do_connect(const bt_addr_le_t *addr)
 {
 	if (g_connecting || g_connected) {
@@ -208,7 +256,8 @@ static bool parse_name_cb(struct bt_data *data, void *user)
 }
 
 /* --- Scan callback: filter on exact device name ----------------------- */
-
+//Purpose: This function is called for each advertising packet 
+// received during scanning.
 static void device_found(const bt_addr_le_t *addr, int8_t rssi,
 			 uint8_t type, struct net_buf_simple *ad)
 {
@@ -248,7 +297,7 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi,
 }
 
 /* --- Connection lifecycle --------------------------------------------- */
-
+//Purpose: These functions handle connection and disconnection events.
 static void connected_cb(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
@@ -261,6 +310,7 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
 	g_connected       = true;
 	g_connecting      = false;
 	g_aircraft_handle = 0;
+	g_warn_handle     = 0;
 	K_SPINLOCK(&stats_lock) {
 		g_stats.connect_count++;
 		g_stats.connected = true;
@@ -274,7 +324,8 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
 		start_discovery(conn);
 	}
 }
-
+//Purpose: This function is called when the connection is disconnected. 
+// It cleans up the connection state, updates stats, and restarts scanning.
 static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 {
 	if (g_conn) {
@@ -283,6 +334,7 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 	}
 	g_connected       = false;
 	g_aircraft_handle = 0;
+	g_warn_handle     = 0;
 	K_SPINLOCK(&stats_lock) {
 		g_stats.disconnect_count++;
 		g_stats.connected = false;
@@ -293,6 +345,8 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 	ble_central_scan_start();
 }
 
+//Purpose: This structure registers the connection callbacks defined
+//  above with the Bluetooth stack.
 BT_CONN_CB_DEFINE(conn_cbs) = {
 	.connected    = connected_cb,
 	.disconnected = disconnected_cb,
@@ -305,6 +359,10 @@ BT_CONN_CB_DEFINE(conn_cbs) = {
 static K_THREAD_STACK_DEFINE(wd_stack, WD_STACK);
 static struct k_thread       wd_thread;
 
+//Purpose: This function is run by the watchdog thread. 
+// It periodically checks if the central is not connected, 
+// not connecting, and not scanning, and if enough time has passed 
+// since the last connection attempt, it restarts scanning.
 static void wd_thread_fn(void *a, void *b, void *c)
 {
 	while (1) {
@@ -318,7 +376,8 @@ static void wd_thread_fn(void *a, void *b, void *c)
 }
 
 /* --- Public API ------------------------------------------------------- */
-
+//Purpose: This function initializes the BLE central. 
+// It enables Bluetooth,
 int ble_central_init(void)
 {
 	memset(&g_stats, 0, sizeof(g_stats));
@@ -342,7 +401,7 @@ int ble_central_init(void)
 	k_thread_name_set(&wd_thread, "ble_wd");
 	return 0;
 }
-
+//Purpose: This function starts scanning for BLE devices.
 void ble_central_scan_start(void)
 {
 	if (g_scanning || g_connected) {
@@ -362,24 +421,31 @@ void ble_central_scan_start(void)
 	g_scanning = true;
 }
 
+
+//Purpose: This function stops scanning for BLE devices.
 void ble_central_scan_stop(void)
 {
 	if (!g_scanning) return;
 	bt_le_scan_stop();
 	g_scanning = false;
 }
-
+//Purpose: This function returns whether the central is currently
+//  connected to a peripheral.
 bool ble_central_is_connected(void)
 {
 	return g_connected;
 }
-
+//Purpose:	 This function disconnects from the currently connected
+//  peripheral, if any.
 void ble_central_disconnect(void)
 {
 	if (!g_connected || !g_conn) return;
 	bt_conn_disconnect(g_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
 }
 
+
+//Purpose: This function returns the number of scan results 
+// currently stored in the list.
 void ble_central_scan_list(const struct shell *sh)
 {
 	if (g_scan_count == 0) {
@@ -396,9 +462,39 @@ void ble_central_scan_list(const struct shell *sh)
 		    g_connected ? "CONNECTED" : (g_scanning ? "scanning" : "idle"));
 }
 
+//Purpose: Get the current stats counters for the BLE central. 
+// This copies the g_stats struct to the provided output pointer 
+// while holding the stats_lock spinlock.
 void ble_central_get_stats(struct ble_central_stats *out)
 {
 	K_SPINLOCK(&stats_lock) {
 		*out = g_stats;
 	}
+}
+
+/* Stage 8.3 — push a fully-formed warning_frame (msg_type+icao+...+crc)
+ * to Will's warning characteristic. WRITE-WITHOUT-RESPONSE: low-latency,
+ * no ack roundtrip. Will's mobile validates the CRC and rejects on
+ * mismatch (so we must compute it before calling — see ble_warning_crc).
+ * Returns 0 on accepted submit, -ENOTCONN if no peer, -EAGAIN if the
+ * warning chr hasn't been discovered yet, or a Zephyr negative on
+ * write-layer failure. */
+int ble_central_send_warning(const struct ble_warning_frame *f)
+{
+	if (!f) {
+		return -EINVAL;
+	}
+	if (!g_connected || !g_conn) {
+		return -ENOTCONN;
+	}
+	if (g_warn_handle == 0) {
+		return -EAGAIN;
+	}
+	int rc = bt_gatt_write_without_response(g_conn, g_warn_handle,
+						f, BLE_WARNING_FRAME_SIZE,
+						false);
+	if (rc) {
+		LOG_WRN("warning write failed: %d", rc);
+	}
+	return rc;
 }

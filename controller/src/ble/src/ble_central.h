@@ -30,6 +30,14 @@ bool ble_central_is_connected(void);
 void ble_central_disconnect(void);
 void ble_central_scan_list(const struct shell *sh);
 
+/* Stage 8.3 — write Will's legacy `warning_frame` to the sim node's WARN
+ * characteristic via write-without-response. Caller fills the entire
+ * `ble_warning_frame` including the XOR CRC (see ble_warning_crc()).
+ * Returns 0 on accepted submit, -ENOTCONN if not connected, -EAGAIN if
+ * the warning characteristic handle hasn't been discovered yet. */
+struct ble_warning_frame;
+int  ble_central_send_warning(const struct ble_warning_frame *f);
+
 struct ble_central_stats {
 	uint32_t notify_count;     /* total notifications received */
 	uint32_t bad_length;       /* notifies with len != BLE_FRAME_SIZE */

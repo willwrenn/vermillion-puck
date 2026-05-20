@@ -42,6 +42,10 @@ static struct k_spinlock         s_stats_lock;
 static struct aircraft_t s_snapshot[MAX_SNAPSHOT];
 static int               s_snapshot_n;
 
+// Purpose: This is the callback passed to `aircraft_db_for_each` 
+// to build a snapshot of the current database entries. 
+// The callback copies each entry's `struct aircraft_t` into the `s_snapshot` array,
+//  up to `MAX_SNAPSHOT`. The caller holds the DB mutex while this callback runs.
 static bool snapshot_cb(const struct aircraft_db_entry *e, void *user)
 {
 	ARG_UNUSED(user);
@@ -78,6 +82,13 @@ static int format_aircraft_json(char *buf, size_t cap, const struct aircraft_t *
 		if (k < 0 || (size_t)(n + k) >= cap) return -1;
 		n += k;
 	}
+	if (ac->valid_mask & AIRCRAFT_VALID_PRED) {
+		int k = snprintf(buf + n, cap - n,
+				 ",\"pred_lat\":%.6f,\"pred_lon\":%.6f",
+				 ac->pred_lat, ac->pred_lon);
+		if (k < 0 || (size_t)(n + k) >= cap) return -1;
+		n += k;
+	}
 
 	int k = snprintf(buf + n, cap - n,
 			 ",\"ts\":%.3f,\"source\":\"%s\"}",
@@ -86,6 +97,8 @@ static int format_aircraft_json(char *buf, size_t cap, const struct aircraft_t *
 	return n + k;
 }
 
+//Purpose: This function is run by the reaper thread.
+//  It iterates over all entries
 static void work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -112,6 +125,7 @@ static void work_handler(struct k_work *work)
 	k_work_reschedule(&s_work, K_MSEC(PUBLISH_PERIOD_MS));
 }
 
+//Purpose: This function initializes the DB publisher.
 int db_publisher_init(void)
 {
 	memset(&s_stats, 0, sizeof(s_stats));
@@ -120,7 +134,7 @@ int db_publisher_init(void)
 	LOG_INF("publishing aircraft_db on ACM1 at %d ms", PUBLISH_PERIOD_MS);
 	return 0;
 }
-
+//Purpose: Get the current stats counters for the DB publisher.
 void db_publisher_get_stats(struct db_publisher_stats *out)
 {
 	K_SPINLOCK(&s_stats_lock) {

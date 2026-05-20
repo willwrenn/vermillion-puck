@@ -102,4 +102,58 @@ _Static_assert(sizeof(struct ble_aircraft_frame) == BLE_FRAME_SIZE,
  *    absent (do not store it in aircraft_db).
  */
 
+/* ===================================================================== */
+/* Controller → mobile WARNING service (legacy XOR-CRC protocol).         */
+/* UUIDs and frame layout are Will's, mirrored from                       */
+/* resources/importedcode/Will_BLE/mobile/codein.c:61-71, 87-88.          */
+/* Will's mobile validates the CRC and on a valid msg_type=0x02           */
+/* (collision) prints "WARN collision ICAO=..." to ttyACM0, flashes red   */
+/* LED and chirps buzzer for 10 s before auto-clearing.                   */
+/* ===================================================================== */
+
+#define WARN_SVC_UUID_ENC \
+	BT_UUID_128_ENCODE(0xab340001, 0x1234, 0x5678, 0xabcd, 0x1234567890ab)
+#define WARN_CHR_UUID_ENC \
+	BT_UUID_128_ENCODE(0xab340002, 0x1234, 0x5678, 0xabcd, 0x1234567890ab)
+
+#define BLE_WARNING_FRAME_SIZE 16
+
+enum ble_warning_msg_type {
+	BLE_WARN_MSG_COLLISION = 0x02,
+	BLE_WARN_MSG_DIVERSION = 0x03,
+	BLE_WARN_MSG_FREETEXT  = 0x04,
+};
+
+enum ble_warning_severity {
+	BLE_WARN_SEV_ADVISORY = 0,
+	BLE_WARN_SEV_WARNING  = 1,
+	BLE_WARN_SEV_URGENT   = 2,
+};
+
+struct __packed ble_warning_frame {
+	uint8_t  msg_type;     /* BLE_WARN_MSG_* */
+	uint8_t  icao[3];      /* ICAO of conflicting (other) aircraft */
+	uint8_t  lat[3];       /* unused for collision msg — zero-fill */
+	uint8_t  lon[3];       /* unused for collision msg — zero-fill */
+	uint16_t alt;          /* unused for collision msg — zero */
+	uint8_t  severity;     /* BLE_WARN_SEV_* */
+	int8_t   hdg_delta;    /* used by msg_type=0x03 only; zero here */
+	uint8_t  timestamp;    /* low byte of k_uptime_get() */
+	uint8_t  crc;          /* XOR of the preceding 15 bytes */
+};
+_Static_assert(sizeof(struct ble_warning_frame) == BLE_WARNING_FRAME_SIZE,
+	       "ble_warning_frame must be 16 bytes");
+
+/* Compute the XOR CRC over the first 15 bytes. Caller writes the result
+ * into f->crc before sending. */
+static inline uint8_t ble_warning_crc(const struct ble_warning_frame *f)
+{
+	const uint8_t *b = (const uint8_t *)f;
+	uint8_t c = 0;
+	for (int i = 0; i < BLE_WARNING_FRAME_SIZE - 1; i++) {
+		c ^= b[i];
+	}
+	return c;
+}
+
 #endif /* BLE_PACKET_H */
