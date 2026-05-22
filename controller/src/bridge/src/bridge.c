@@ -29,7 +29,12 @@
 LOG_MODULE_REGISTER(bridge, LOG_LEVEL_INF);
 
 #define BRIDGE_QUEUE_DEPTH   8
-#define BRIDGE_STACK         2048
+/* 4096 because aircraft_db_upsert now drives the 5x5 IMM EKF math
+ * (Phase 9) — its locals (Pm/F/Q/FP/Ft/FPFt/Pm_new ≈ 1400 B) plus the
+ * existing call-chain overflowed the original 2048 B stack the moment
+ * Will's mobile started pushing BLE notifications. Symptom was a hang
+ * + frozen heartbeat LED right after BT connect. */
+#define BRIDGE_STACK         4096
 #define BRIDGE_PRIO          7
 
 K_MSGQ_DEFINE(bridge_msgq, sizeof(struct ble_aircraft_frame),

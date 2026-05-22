@@ -36,7 +36,11 @@ LOG_MODULE_REGISTER(usb_handler, LOG_LEVEL_INF);
 #define RINGBUF_BYTES       2048
 #define LINE_BUF_BYTES      512
 
-#define RX_THREAD_STACK     2048
+/* 4096 because each parsed JSON aircraft frame triggers IMM EKF math
+ * (Phase 9) inside aircraft_db_upsert — see bridge.c for the same
+ * reasoning. The original 2048 B stack overflowed once the ADS-B
+ * bridge started feeding real traffic. */
+#define RX_THREAD_STACK     4096
 #define RX_THREAD_PRIO      7
 
 static const struct device *const data_uart = DEVICE_DT_GET(DATA_UART_NODE);

@@ -27,12 +27,14 @@
 #define COLLISION_ADVISORY_SEP_M   1000.0
 #define COLLISION_ADVISORY_TCA_S   60.0
 
-/* Stage 11 — CRASH thresholds. Tight enough that a normal evasion clears
- * them; only direct hits trip the level. If one aircraft has no altitude
- * reported, only the horizontal threshold applies (matches the missile
- * module's IMPACT check in missile.c). */
-#define COLLISION_CRASH_SEP_M      50.0
-#define COLLISION_CRASH_VERT_FT    164   /* ~50 m */
+/* Stage 11 — CRASH thresholds. The single source of truth for what
+ * counts as a "hit" anywhere in the system — the missile module no
+ * longer self-cancels on proximity; it pursues all the way in and the
+ * collision detector declares the CRASH event when these bounds are met.
+ * If one aircraft has no altitude reported, only the horizontal
+ * threshold applies. */
+#define COLLISION_CRASH_SEP_M      100.0
+#define COLLISION_CRASH_VERT_FT    328   /* ~100 m */
 
 /* Vertical-separation gate. If both aircraft report altitude AND the
  * difference exceeds this, the pair is force-CLEAR regardless of

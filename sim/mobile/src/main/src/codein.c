@@ -170,29 +170,16 @@ static ssize_t warn_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 		k_work_reschedule(&warning_clear_work, K_SECONDS(2));
 		break;
 	case 0x03: // diversion suggestion (hdg_delta)
+		/* Suggestion only — print to ttyACM0 so the PC GUI shows the
+		 * orange DIVERSION panel, set the warning flag for the LED/
+		 * buzzer alert, but do NOT change heading. The human pilot
+		 * (Will using wasd) decides whether to act on the suggestion.
+		 * Matches the real-ATC mental model: controller advises,
+		 * pilot executes. */
 		printk("WARN diversion ICAO=%02x%02x%02x hdg_delta=%d\n",
 		       w->icao[0], w->icao[1], w->icao[2], w->hdg_delta);
 		g_warning_active = true;
 		k_work_reschedule(&warning_clear_work, K_SECONDS(2));
-		/* Stage 11 — actually act on the suggestion. Most diversions
-		 * just shift heading by the small delta; the two sentinels
-		 * (-127 = HOLD/start circling, +127 = RTB/turn to St Lucia)
-		 * are interpreted specially. */
-		if (w->hdg_delta == -127) {
-			g_turn_rate = 6.0f;   /* gentle right circle (~ 36s/lap) */
-		} else if (w->hdg_delta == +127) {
-			/* RTB: rough bearing toward St Lucia origin from current
-			 * position. Simple atan2 in deg-units. */
-			float dlat = (float)(-274975000 - g_lat) / 1e7f;
-			float dlon = (float)( 1530137000 - g_lon) / 1e7f;
-			float brg = atan2f(dlon, dlat) * 180.0f / 3.14159f;
-			if (brg < 0) brg += 360.0f;
-			g_heading = (uint16_t)brg;
-			g_turn_rate = 0.0f;
-		} else {
-			int new_hdg = ((int)g_heading + (int)w->hdg_delta + 360) % 360;
-			g_heading = (uint16_t)new_hdg;
-		}
 		break;
 	case 0x05: // Stage 11 — CRASH: freeze 10 s then reset to St Lucia.
 		printk("WARN crash\n");   // Will's GUI shows full-screen overlay

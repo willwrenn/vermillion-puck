@@ -22,7 +22,6 @@
 
 #include <errno.h>
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -35,11 +34,11 @@ LOG_MODULE_REGISTER(missile, LOG_LEVEL_INF);
 #define KT_TO_MPS         0.514444
 #define MISSILE_ICAO      "m1s51l"
 
-/* Auto-cancel when within this horizontal range AND vertical gap. Keeps a
- * "killed" missile from looping forever even if WARNING never fires (e.g.
- * if the target has no altitude reported). */
-#define IMPACT_HORIZ_M    300.0
-#define IMPACT_VERT_FT    500
+/* Stage 11 — the missile no longer self-cancels on proximity. The
+ * collision detector's CRASH event (100 m horiz + 100 m vert — see
+ * collision.h) is the single source of truth for what counts as a "hit",
+ * and collision.c calls missile_cancel() on the transition so the
+ * missile doesn't keep orbiting through the impact point. */
 
 static inline double deg_per_m_lon_at(double lat_deg)
 {
@@ -147,18 +146,11 @@ static void worker_handler(struct k_work *work)
 			else                                       s_alt_ft  = target_alt;
 		}
 
-		/* Impact check (independent of collision pipeline so the missile
-		 * cancels even if WARNING didn't fire for some reason — e.g.
-		 * target lacks altitude data and the vertical gate held). */
-		double horiz = sqrt(dn * dn + de * de);
-		bool vert_ok = !(tgt.valid_mask & AIRCRAFT_VALID_ALT) ||
-			       (abs(s_alt_ft - tgt.alt_ft) <= IMPACT_VERT_FT);
-		if (horiz <= IMPACT_HORIZ_M && vert_ok) {
-			LOG_WRN("missile %s IMPACT on %s at %.0f m horiz",
-				MISSILE_ICAO, tgt.icao, horiz);
-			s_active = false;
-			return;
-		}
+		/* No self-impact check — collision.c's CRASH transition is the
+		 * authoritative hit detector (50 m / 50 m by default). When CRASH
+		 * fires for a pair that includes m1s51l, collision.c calls
+		 * missile_cancel() which stops the worker and lets the missile
+		 * stale-evict from the DB ~10 s later. */
 	}
 
 	/* Dead-reckon forward. */

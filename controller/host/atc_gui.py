@@ -1180,6 +1180,7 @@ class AtcMainWindow(QMainWindow):
         tca   = float(frame.get("tca_s", 0.0))
         sep   = float(frame.get("min_sep_m", 0.0))
         alt_d = frame.get("alt_diff_ft")  # may be None if firmware didn't report
+        divert = frame.get("diversion")   # Stage 11: controller's suggestion (or None)
         # Always feed the collision-history dashboard (it has its own logic
         # about WARNING/ADVISORY entries persisting after CLEAR).
         self.history.on_event(key, level, tca, sep, alt_d, recv_t)
@@ -1203,7 +1204,7 @@ class AtcMainWindow(QMainWindow):
                 src = entry[0].get("source", "") if entry else ""
                 hide_for = CRASH_HIDE_SIM_S if src == "BLE_SIM" else CRASH_HIDE_REAL_S
                 self._crashed[icao] = recv_t + hide_for
-        self.alerts[key] = (level, tca, sep, alt_d, recv_t)
+        self.alerts[key] = (level, tca, sep, alt_d, recv_t, divert)
 
     def refresh_view(self):
         now = time.time()
@@ -1282,15 +1283,19 @@ class AtcMainWindow(QMainWindow):
             items = sorted(self.alerts.items(),
                            key=lambda kv: (order.get(kv[1][0], 9), kv[0]))
             lines = []
-            for (a, b), (lvl, tca, sep, alt_d, _) in items[:4]:   # cap to 4 visible
+            for (a, b), (lvl, tca, sep, alt_d, _, divert) in items[:4]:   # cap to 4 visible
+                # Stage 11 — append the controller's suggested diversion
+                # (LEFT / RIGHT / CLIMB / etc) so the operator sees what
+                # ATC recommended, not just the live separation numbers.
+                div_suffix = f" · DIVERT {divert}" if divert else ""
                 if lvl == "CRASH":
                     # Terminal — drop the live numerics and announce death.
                     lines.append(f"CRASHED: {a} ↔ {b}")
                 elif alt_d is None:
-                    lines.append(f"{lvl}: {a} ↔ {b} · {sep:.0f} m · in {tca:.1f} s")
+                    lines.append(f"{lvl}: {a} ↔ {b} · {sep:.0f} m · in {tca:.1f} s{div_suffix}")
                 else:
                     lines.append(
-                        f"{lvl}: {a} ↔ {b} · {sep:.0f} m · Δalt {int(alt_d):+d} ft · in {tca:.1f} s"
+                        f"{lvl}: {a} ↔ {b} · {sep:.0f} m · Δalt {int(alt_d):+d} ft · in {tca:.1f} s{div_suffix}"
                     )
             self.alert_banner.setText("    ".join(lines))
             self._alert_flash = not self._alert_flash

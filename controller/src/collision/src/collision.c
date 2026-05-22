@@ -22,6 +22,7 @@
 #include "usb_serial.h"
 #include "ble_packet.h"
 #include "ble_central.h"
+#include "missile.h"
 
 #include <errno.h>
 #include <math.h>
@@ -64,6 +65,16 @@ struct tracked_pair {
 	char     icao_a[AIRCRAFT_ICAO_BUF_LEN];
 	char     icao_b[AIRCRAFT_ICAO_BUF_LEN];
 	enum collision_level level;  /* last reported level (non-CLEAR) */
+	/* Stage 11 — the diversion we suggested when this pair first
+	 * tripped ADVISORY. Persisted so every subsequent JSON frame can
+	 * include it, letting our GUI display "DIVERT LEFT" alongside the
+	 * banner for the whole encounter. Empty if no diversion fired
+	 * (e.g. pair doesn't include the BLE_SIM). */
+	char     diversion[12];
+	/* Stage 11 — last time we re-sent the BLE WARNING frame to Will.
+	 * We re-fire every ~8 s while WARNING-active so his buzzer (2 s
+	 * auto-clear) doesn't go silent mid-encounter. */
+	int64_t  last_warn_send_ms;
 };
 static struct tracked_pair s_tracked[MAX_TRACKED];
 static int                  s_tracked_n;
@@ -71,6 +82,19 @@ static int                  s_tracked_n;
 static struct collision_stats s_stats;
 static struct k_spinlock      s_stats_lock;
 static struct k_work_delayable s_work;
+
+/* Stage 11 — pending diversion. When a pair transitions into WARNING we
+ * fire the BLE WARNING frame immediately, then schedule the DIVERSION
+ * frame to land ~300 ms later via this delayable. Sending both in the
+ * same instant raced inside Will's BLE stack — the diversion's hdg_delta
+ * sometimes got processed before the warning flash even started, making
+ * the operator miss why the aircraft just turned. */
+static struct {
+	char                       other[AIRCRAFT_ICAO_BUF_LEN];
+	enum collision_diversion   dir;
+	bool                       valid;
+} s_pending_div;
+static struct k_work_delayable s_pending_div_work;
 
 /* Keep-alive for `collision_inject`: re-upserts the two synthetic aircraft
  * every 3 s so they don't stale-evict (10 s threshold) and stay on the GUI
@@ -374,6 +398,19 @@ static void send_ble_diversion(const char *other_icao,
 		collision_diversion_str(d), other_icao, rc);
 }
 
+/* Stage 11 — staged-diversion handler. Fires the pending diversion BLE
+ * frame ~300 ms after the WARNING so each frame gets its own clean GATT
+ * round-trip on Will's mobile. */
+static void pending_div_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (!s_pending_div.valid) {
+		return;
+	}
+	send_ble_diversion(s_pending_div.other, s_pending_div.dir);
+	s_pending_div.valid = false;
+}
+
 /* Pick a diversion direction based on relative geometry: the SIM should
  * turn AWAY from the threat. If the threat is to the right (bearing
  * positive vs SIM heading), suggest LEFT; if directly head-on with high
@@ -414,41 +451,42 @@ static enum collision_diversion pick_diversion(
 
 static void emit_collision(const char *lo, const char *hi,
 			   enum collision_level lvl,
-			   const struct approach *a)
+			   const struct approach *a,
+			   const char *diversion)
 {
-	char buf[224];
-	int n;
+	char buf[256];
+	/* Optional fields built into small inline scratch strings so the main
+	 * snprintf stays readable. Empty string = field omitted. */
+	char alt_field[40] = "";
+	char div_field[40] = "";
 	if (a->alt_valid) {
-		n = snprintf(buf, sizeof(buf),
-			"{\"type\":\"collision\",\"icao_a\":\"%s\",\"icao_b\":\"%s\","
-			"\"level\":\"%s\",\"tca_s\":%.1f,\"min_sep_m\":%.0f,"
-			"\"alt_diff_ft\":%d,\"ts\":%.3f}",
-			lo, hi,
-			collision_level_str(lvl),
-			isfinite(a->tca_s) ? a->tca_s : 0.0,
-			a->min_sep_m,
-			a->alt_diff_ft,
-			(double)k_uptime_get() / 1000.0);
-	} else {
-		n = snprintf(buf, sizeof(buf),
-			"{\"type\":\"collision\",\"icao_a\":\"%s\",\"icao_b\":\"%s\","
-			"\"level\":\"%s\",\"tca_s\":%.1f,\"min_sep_m\":%.0f,"
-			"\"ts\":%.3f}",
-			lo, hi,
-			collision_level_str(lvl),
-			isfinite(a->tca_s) ? a->tca_s : 0.0,
-			a->min_sep_m,
-			(double)k_uptime_get() / 1000.0);
+		snprintf(alt_field, sizeof(alt_field),
+			 ",\"alt_diff_ft\":%d", a->alt_diff_ft);
 	}
+	if (diversion && diversion[0]) {
+		snprintf(div_field, sizeof(div_field),
+			 ",\"diversion\":\"%s\"", diversion);
+	}
+
+	int n = snprintf(buf, sizeof(buf),
+		"{\"type\":\"collision\",\"icao_a\":\"%s\",\"icao_b\":\"%s\","
+		"\"level\":\"%s\",\"tca_s\":%.1f,\"min_sep_m\":%.0f"
+		"%s%s,\"ts\":%.3f}",
+		lo, hi,
+		collision_level_str(lvl),
+		isfinite(a->tca_s) ? a->tca_s : 0.0,
+		a->min_sep_m,
+		alt_field,
+		div_field,
+		(double)k_uptime_get() / 1000.0);
+
 	if (n < 0 || (size_t)n >= sizeof(buf)) return;
 	usb_serial_println(buf);
 	K_SPINLOCK(&s_stats_lock) { s_stats.frames_emitted++; }
 
-	/* BLE warning is fired by the caller on transition INTO WARNING
-	 * (see work_handler). We deliberately do NOT re-fire here on every
-	 * tick: Will's mobile board buzzes for 10 s per frame and re-arms
-	 * on each one, which kept the speaker chirping long after the
-	 * banner cleared. One frame per transition is enough. */
+	/* BLE warning is fired by the caller on transition INTO WARNING and
+	 * periodically re-armed every ~8 s while WARNING-active so Will's
+	 * 2-s buzzer keeps ringing through the encounter. */
 }
 
 /* ---- per-tick handler ----------------------------------------------- */
@@ -494,16 +532,27 @@ static void work_handler(struct k_work *work)
 				}
 			}
 
-			/* Stage 11 — CRASH upgrade. A WARNING that's also within
-			 * the tight horizontal+vertical impact thresholds becomes
-			 * CRASH. If altitude is unknown for either side, the
-			 * horizontal check alone gates it (consistent with the
-			 * missile-module IMPACT check). */
-			if (lvl == COLLISION_WARNING &&
-			    app.min_sep_m < COLLISION_CRASH_SEP_M) {
-				bool vert_ok = !app.alt_valid ||
-					(app.alt_diff_ft < COLLISION_CRASH_VERT_FT);
-				if (vert_ok) {
+			/* Stage 11 — CRASH upgrade. CRASH is only declared when
+			 * the two aircraft are CURRENTLY within the tight crash
+			 * thresholds — NOT when their projected closest approach
+			 * is. Without this, a pair on a guaranteed-collision
+			 * course flagged CRASH the moment closest_approach()'s
+			 * projected min_sep dropped under 50 m, even though they
+			 * were 15 s away from actually impacting. */
+			if (lvl == COLLISION_WARNING) {
+				double dn_m = (s_snap[j].lat - s_snap[i].lat) / DEG_PER_M_LAT;
+				double de_m = (s_snap[j].lon - s_snap[i].lon)
+					      / deg_per_m_lon_at(s_snap[i].lat);
+				double current_horiz_m = sqrt(dn_m * dn_m + de_m * de_m);
+				bool have_vert = s_snap[i].alt_valid && s_snap[j].alt_valid;
+				int32_t current_vert_ft = 0;
+				if (have_vert) {
+					int32_t dz = s_snap[i].alt_ft - s_snap[j].alt_ft;
+					current_vert_ft = (dz < 0) ? -dz : dz;
+				}
+				bool vert_ok = !have_vert ||
+					(current_vert_ft < COLLISION_CRASH_VERT_FT);
+				if (current_horiz_m < COLLISION_CRASH_SEP_M && vert_ok) {
 					lvl = COLLISION_CRASH;
 				}
 			}
@@ -522,37 +571,38 @@ static void work_handler(struct k_work *work)
 			else                                                    adv++;
 
 			enum collision_level prev_level = COLLISION_CLEAR;
+			struct tracked_pair *tp = NULL;
 			if (tk >= 0) {
 				seen[tk] = true;
-				prev_level = s_tracked[tk].level;
+				tp = &s_tracked[tk];
+				prev_level = tp->level;
 				/* Emit every tick while non-CLEAR. CRASH is also
 				 * emitted every tick (cheap; GUI uses it to keep
 				 * the dark-red banner visible while the icons are
 				 * hidden during the 20 s/10 s respawn window). */
-				s_tracked[tk].level = lvl;
-				emit_collision(lo, hi, lvl, &app);
+				tp->level = lvl;
+				emit_collision(lo, hi, lvl, &app, tp->diversion);
 			} else if (s_tracked_n < MAX_TRACKED) {
 				int idx = s_tracked_n++;
-				strncpy(s_tracked[idx].icao_a, lo, AIRCRAFT_ICAO_BUF_LEN);
-				strncpy(s_tracked[idx].icao_b, hi, AIRCRAFT_ICAO_BUF_LEN);
-				s_tracked[idx].level = lvl;
+				tp = &s_tracked[idx];
+				strncpy(tp->icao_a, lo, AIRCRAFT_ICAO_BUF_LEN);
+				strncpy(tp->icao_b, hi, AIRCRAFT_ICAO_BUF_LEN);
+				tp->level = lvl;
+				tp->diversion[0]      = '\0';   /* none yet */
+				tp->last_warn_send_ms = 0;
 				seen[idx] = true;
-				emit_collision(lo, hi, lvl, &app);
+				emit_collision(lo, hi, lvl, &app, NULL);
 			}
 
-			/* Fire Will's buzzer ONLY on a fresh transition into WARNING
-			 * (CLEAR/ADVISORY -> WARNING). His board re-arms a 10 s
-			 * auto-clearing buzzer on each frame; re-firing every tick
-			 * made the speaker keep chirping after the GUI banner had
-			 * already cleared. One frame per encounter is enough.
-			 *
-			 * Stage 11 — also send a diversion suggestion on the same
-			 * transition: the picker chooses left/right/climb/descend/
-			 * RTB/hold based on the relative geometry of SIM vs threat. */
-			if (lvl == COLLISION_WARNING && prev_level != COLLISION_WARNING &&
-			    prev_level != COLLISION_CRASH) {
-				send_ble_warning(lo, hi);
-
+			/* Stage 11 — DIVERSION fires early, on transition INTO
+			 * ADVISORY. At high closing speeds (e.g. missile-vs-sim
+			 * ~1500 kt closure) WARNING only opens ~2-3 s before
+			 * impact, which is too late for the sim to physically
+			 * react. ADVISORY opens at min_sep<1km / tca<60s — gives
+			 * a comfortable ~30 s window for the suggestion to land
+			 * and the heading change to actually move the aircraft. */
+			if ((lvl == COLLISION_ADVISORY || lvl == COLLISION_WARNING) &&
+			    prev_level == COLLISION_CLEAR) {
 				/* Diversion: only fires if exactly one of the pair is
 				 * the BLE_SIM (so we know which side to advise). */
 				struct snap_row *sim_row = NULL;
@@ -568,7 +618,47 @@ static void work_handler(struct k_work *work)
 				if (sim_row && thr_row) {
 					enum collision_diversion d =
 					    pick_diversion(sim_row, thr_row);
-					send_ble_diversion(thr_row->icao, d);
+					strncpy(s_pending_div.other, thr_row->icao,
+						AIRCRAFT_ICAO_BUF_LEN - 1);
+					s_pending_div.other[AIRCRAFT_ICAO_BUF_LEN - 1] = '\0';
+					s_pending_div.dir   = d;
+					s_pending_div.valid = true;
+					/* Persist the suggestion on the tracked-pair so every
+					 * subsequent JSON frame for this encounter carries
+					 * `"diversion":"LEFT"` and the GUI banner can show
+					 * what the controller advised — not just the live
+					 * separation numbers. */
+					if (tp) {
+						strncpy(tp->diversion,
+							collision_diversion_str(d),
+							sizeof(tp->diversion) - 1);
+						tp->diversion[sizeof(tp->diversion) - 1] = '\0';
+					}
+					/* No need to stage with a delay here — at ADVISORY
+					 * there's no other BLE frame competing for the
+					 * GATT write window. Fire on the next workqueue
+					 * tick (1 ms) so the diversion lands fast and Will
+					 * can start turning ASAP. */
+					k_work_reschedule(&s_pending_div_work, K_MSEC(1));
+				}
+			}
+
+			/* Fire Will's buzzer on a fresh transition into WARNING
+			 * (CLEAR/ADVISORY -> WARNING) AND every ~8 s while
+			 * WARNING-active. Will's mobile auto-clears the buzzer
+			 * after 2 s; without periodic re-fire the operator gets
+			 * a single buzz and then silence for the rest of the
+			 * encounter. Re-firing every 8 s leaves a small gap
+			 * between buzzes so the alert reads as a clear "still
+			 * threatening" pulse rather than a continuous wail. */
+			if (lvl == COLLISION_WARNING && tp) {
+				int64_t now_ms = k_uptime_get();
+				bool transition = (prev_level != COLLISION_WARNING &&
+						   prev_level != COLLISION_CRASH);
+				bool stale      = (now_ms - tp->last_warn_send_ms) > 8000;
+				if (transition || stale) {
+					send_ble_warning(lo, hi);
+					tp->last_warn_send_ms = now_ms;
 				}
 			}
 
@@ -593,6 +683,15 @@ static void work_handler(struct k_work *work)
 				LOG_WRN("CRASH %s ↔ %s  sep=%.0fm  alt_diff=%dft",
 					lo, hi, app.min_sep_m,
 					app.alt_valid ? app.alt_diff_ft : -1);
+
+				/* If the missile is involved in this CRASH, stop it
+				 * so it doesn't keep orbiting through the impact
+				 * point. The missile's worker exits cleanly + the
+				 * m1s51l DB entry stale-evicts ~10 s later. */
+				if (strncmp(lo, "m1s51l", AIRCRAFT_ICAO_BUF_LEN) == 0 ||
+				    strncmp(hi, "m1s51l", AIRCRAFT_ICAO_BUF_LEN) == 0) {
+					missile_cancel();
+				}
 			}
 		}
 	}
@@ -603,7 +702,7 @@ static void work_handler(struct k_work *work)
 			struct approach a = { .tca_s = INFINITY,
 					      .min_sep_m = 0.0, .diverging = true };
 			emit_collision(s_tracked[i].icao_a, s_tracked[i].icao_b,
-				       COLLISION_CLEAR, &a);
+				       COLLISION_CLEAR, &a, NULL);
 			tracked_remove(i);
 		}
 	}
@@ -628,6 +727,7 @@ int collision_init(void)
 	k_work_init_delayable(&s_work, work_handler);
 	k_work_init_delayable(&s_inject_keepalive, inject_keepalive_handler);
 	k_work_init_delayable(&s_ghost_keepalive,  ghost_keepalive_handler);
+	k_work_init_delayable(&s_pending_div_work, pending_div_handler);
 	k_work_reschedule(&s_work, K_MSEC(COLLISION_TICK_MS));
 	LOG_INF("collision detector armed @ %d ms", COLLISION_TICK_MS);
 	return 0;
@@ -898,7 +998,7 @@ int collision_crash_trigger(const char *icao_a, const char *icao_b)
 	};
 
 	/* Emit the JSON frame (our GUI + InfluxDB + MQTT see it). */
-	emit_collision(lo, hi, COLLISION_CRASH, &app);
+	emit_collision(lo, hi, COLLISION_CRASH, &app, NULL);
 
 	/* Also push the BLE CRASH frame so Will's sim freezes. Pick the
 	 * non-SIM side as the "other" ICAO. */
