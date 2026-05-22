@@ -19,7 +19,9 @@ target_sources(app PRIVATE
     src/aircraft_db/src/aircraft_db.c
     src/db_publisher/src/db_publisher.c
     src/kalman/src/kalman.c
+    src/imm/src/imm.c
     src/collision/src/collision.c
+    src/missile/src/missile.c
 )
 
 # Each lib's src/ is also its public include dir — keeps the module boundary
@@ -36,5 +38,7 @@ target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/aircraft_db/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/db_publisher/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/kalman/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/imm/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/collision/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/missile/src
 )

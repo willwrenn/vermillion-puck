@@ -105,9 +105,23 @@ static void                    ghost_keepalive_handler(struct k_work *work);
 const char *collision_level_str(enum collision_level lvl)
 {
 	switch (lvl) {
+	case COLLISION_CRASH:    return "CRASH";
 	case COLLISION_WARNING:  return "WARNING";
 	case COLLISION_ADVISORY: return "ADVISORY";
 	default:                 return "CLEAR";
+	}
+}
+
+const char *collision_diversion_str(enum collision_diversion d)
+{
+	switch (d) {
+	case DIVERSION_LEFT:    return "LEFT";
+	case DIVERSION_RIGHT:   return "RIGHT";
+	case DIVERSION_CLIMB:   return "CLIMB";
+	case DIVERSION_DESCEND: return "DESCEND";
+	case DIVERSION_RTB:     return "RTB";
+	case DIVERSION_HOLD:    return "HOLD";
+	default:                return "?";
 	}
 }
 
@@ -306,6 +320,98 @@ static void send_ble_warning(const char *lo, const char *hi)
 	}
 }
 
+/* Stage 11 — fire a terminal CRASH frame to Will. Sim firmware freezes
+ * for 10 s, emits "WARN crash" to ttyACM1 (his GUI catches it and shows
+ * a full-screen red overlay), then resets to St Lucia origin. */
+static void send_ble_crash(const char *other_icao)
+{
+	if (!ble_central_is_connected()) {
+		return;
+	}
+	struct ble_warning_frame w = {0};
+	w.msg_type  = BLE_WARN_MSG_CRASH;
+	pack_icao24_bytes(other_icao, w.icao);
+	w.severity  = BLE_WARN_SEV_URGENT;
+	w.timestamp = (uint8_t)(k_uptime_get() & 0xFF);
+	w.crc       = ble_warning_crc(&w);
+
+	int rc = ble_central_send_warning(&w);
+	if (rc) {
+		LOG_DBG("BLE crash write rc=%d", rc);
+	}
+}
+
+/* Stage 11 — auto-suggest a diversion when a WARNING pair fires.
+ * `other_icao` is the threat (not the SIM). Encodes the chosen
+ * diversion as MSG_DIVERSION with hdg_delta (and/or alt) populated;
+ * Will's mobile firmware turns by hdg_delta on receipt, and his PC
+ * GUI displays the "DIVERSION" panel. */
+static void send_ble_diversion(const char *other_icao,
+			       enum collision_diversion d)
+{
+	if (!ble_central_is_connected()) {
+		return;
+	}
+	struct ble_warning_frame w = {0};
+	w.msg_type  = BLE_WARN_MSG_DIVERSION;
+	pack_icao24_bytes(other_icao, w.icao);
+	w.severity  = BLE_WARN_SEV_ADVISORY;
+	w.timestamp = (uint8_t)(k_uptime_get() & 0xFF);
+	/* Map each diversion to (hdg_delta, alt-delta-in-ft as alt field). */
+	switch (d) {
+	case DIVERSION_LEFT:    w.hdg_delta = -30; break;
+	case DIVERSION_RIGHT:   w.hdg_delta = +30; break;
+	case DIVERSION_CLIMB:   w.alt = 1000;      break;
+	case DIVERSION_DESCEND: w.alt = (uint16_t)(-1000); break;
+	case DIVERSION_RTB:     w.hdg_delta = +127; /* sentinel: "head to base" */
+		break;
+	case DIVERSION_HOLD:    w.hdg_delta = -127; /* sentinel: "start circling" */
+		break;
+	}
+	w.crc = ble_warning_crc(&w);
+	int rc = ble_central_send_warning(&w);
+	LOG_INF("BLE diversion %s -> %s rc=%d",
+		collision_diversion_str(d), other_icao, rc);
+}
+
+/* Pick a diversion direction based on relative geometry: the SIM should
+ * turn AWAY from the threat. If the threat is to the right (bearing
+ * positive vs SIM heading), suggest LEFT; if directly head-on with high
+ * closing speed, suggest RTB; etc. Falls back to HOLD if geometry can't
+ * be derived. */
+static enum collision_diversion pick_diversion(
+	const struct snap_row *sim, const struct snap_row *thr)
+{
+	/* Bearing from SIM to threat, in degrees true (0..360). */
+	double dn = (thr->lat - sim->lat) / DEG_PER_M_LAT;
+	double de = (thr->lon - sim->lon) / deg_per_m_lon_at(sim->lat);
+	double bearing = atan2(de, dn) * (180.0 / KF_PI);
+	if (bearing < 0.0) bearing += 360.0;
+
+	/* SIM's current heading. derive_velocity_mps gives v_north/v_east. */
+	double sim_hdg = atan2(sim->v_east_mps, sim->v_north_mps) * (180.0 / KF_PI);
+	if (sim_hdg < 0.0) sim_hdg += 360.0;
+	double rel = bearing - sim_hdg;
+	while (rel >  180.0) rel -= 360.0;
+	while (rel < -180.0) rel += 360.0;
+
+	/* Vertical: if threat is meaningfully above or below, prefer altitude. */
+	if (sim->alt_valid && thr->alt_valid) {
+		int32_t dz = thr->alt_ft - sim->alt_ft;
+		if (dz >  300) return DIVERSION_DESCEND;   /* threat above → go down */
+		if (dz < -300) return DIVERSION_CLIMB;     /* threat below → go up */
+	}
+
+	/* Near head-on (rel ~ 180°): the threat is ahead but coming at us;
+	 * a turn alone won't help much — recommend RTB to break the geometry. */
+	if (fabs(rel) > 160.0) return DIVERSION_RTB;
+
+	/* Otherwise: threat is to one side → turn the OTHER way. */
+	if (rel > 0.0)  return DIVERSION_LEFT;     /* threat on right → bank left */
+	if (rel < 0.0)  return DIVERSION_RIGHT;
+	return DIVERSION_HOLD;
+}
+
 static void emit_collision(const char *lo, const char *hi,
 			   enum collision_level lvl,
 			   const struct approach *a)
@@ -388,6 +494,20 @@ static void work_handler(struct k_work *work)
 				}
 			}
 
+			/* Stage 11 — CRASH upgrade. A WARNING that's also within
+			 * the tight horizontal+vertical impact thresholds becomes
+			 * CRASH. If altitude is unknown for either side, the
+			 * horizontal check alone gates it (consistent with the
+			 * missile-module IMPACT check). */
+			if (lvl == COLLISION_WARNING &&
+			    app.min_sep_m < COLLISION_CRASH_SEP_M) {
+				bool vert_ok = !app.alt_valid ||
+					(app.alt_diff_ft < COLLISION_CRASH_VERT_FT);
+				if (vert_ok) {
+					lvl = COLLISION_CRASH;
+				}
+			}
+
 			const char *lo, *hi;
 			pair_key(s_snap[i].icao, s_snap[j].icao, &lo, &hi);
 			int tk = find_tracked(lo, hi);
@@ -398,18 +518,17 @@ static void work_handler(struct k_work *work)
 				continue;
 			}
 
-			if (lvl == COLLISION_WARNING) warn++;
-			else                          adv++;
+			if (lvl == COLLISION_WARNING || lvl == COLLISION_CRASH) warn++;
+			else                                                    adv++;
 
 			enum collision_level prev_level = COLLISION_CLEAR;
 			if (tk >= 0) {
 				seen[tk] = true;
 				prev_level = s_tracked[tk].level;
-				/* Emit every tick while non-CLEAR (both WARNING and
-				 * ADVISORY). The GUI's alert dict expires entries after
-				 * ~3 s of silence, so emitting only on transition would
-				 * make a one-frame alert vanish before the operator
-				 * could read it. CLEAR is handled in the post-loop pass. */
+				/* Emit every tick while non-CLEAR. CRASH is also
+				 * emitted every tick (cheap; GUI uses it to keep
+				 * the dark-red banner visible while the icons are
+				 * hidden during the 20 s/10 s respawn window). */
 				s_tracked[tk].level = lvl;
 				emit_collision(lo, hi, lvl, &app);
 			} else if (s_tracked_n < MAX_TRACKED) {
@@ -425,9 +544,55 @@ static void work_handler(struct k_work *work)
 			 * (CLEAR/ADVISORY -> WARNING). His board re-arms a 10 s
 			 * auto-clearing buzzer on each frame; re-firing every tick
 			 * made the speaker keep chirping after the GUI banner had
-			 * already cleared. One frame per encounter is enough. */
-			if (lvl == COLLISION_WARNING && prev_level != COLLISION_WARNING) {
+			 * already cleared. One frame per encounter is enough.
+			 *
+			 * Stage 11 — also send a diversion suggestion on the same
+			 * transition: the picker chooses left/right/climb/descend/
+			 * RTB/hold based on the relative geometry of SIM vs threat. */
+			if (lvl == COLLISION_WARNING && prev_level != COLLISION_WARNING &&
+			    prev_level != COLLISION_CRASH) {
 				send_ble_warning(lo, hi);
+
+				/* Diversion: only fires if exactly one of the pair is
+				 * the BLE_SIM (so we know which side to advise). */
+				struct snap_row *sim_row = NULL;
+				struct snap_row *thr_row = NULL;
+				struct aircraft_t a_i, a_j;
+				if (aircraft_db_lookup(s_snap[i].icao, &a_i) == 0 &&
+				    a_i.source == SRC_BLE_SIM) {
+					sim_row = &s_snap[i]; thr_row = &s_snap[j];
+				} else if (aircraft_db_lookup(s_snap[j].icao, &a_j) == 0 &&
+					   a_j.source == SRC_BLE_SIM) {
+					sim_row = &s_snap[j]; thr_row = &s_snap[i];
+				}
+				if (sim_row && thr_row) {
+					enum collision_diversion d =
+					    pick_diversion(sim_row, thr_row);
+					send_ble_diversion(thr_row->icao, d);
+				}
+			}
+
+			/* Stage 11 — fire the CRASH BLE frame on transition into
+			 * CRASH. Sim mobile freezes for 10 s + emits "WARN crash"
+			 * to ttyACM1 so Will's PC GUI shows the full-screen red
+			 * overlay. */
+			if (lvl == COLLISION_CRASH && prev_level != COLLISION_CRASH) {
+				/* The "other" ICAO is the one that ISN'T the BLE_SIM
+				 * (so Will sees the threat ID, not his own). If
+				 * neither is the SIM, just pick `lo`. */
+				const char *other = lo;
+				struct aircraft_t a_lo, a_hi;
+				if (aircraft_db_lookup(lo, &a_lo) == 0 &&
+				    a_lo.source == SRC_BLE_SIM) {
+					other = hi;
+				} else if (aircraft_db_lookup(hi, &a_hi) == 0 &&
+					   a_hi.source == SRC_BLE_SIM) {
+					other = lo;
+				}
+				send_ble_crash(other);
+				LOG_WRN("CRASH %s ↔ %s  sep=%.0fm  alt_diff=%dft",
+					lo, hi, app.min_sep_m,
+					app.alt_valid ? app.alt_diff_ft : -1);
 			}
 		}
 	}
@@ -705,5 +870,61 @@ int collision_ghost_stop(void)
 {
 	s_ghost_active = false;
 	LOG_INF("GHOST stop requested; %s will stale-evict in ~10 s", GHOST_ICAO);
+	return 0;
+}
+
+/* ---- Stage 11 — manual CRASH / DIVERSION test paths ---------------- */
+
+int collision_crash_trigger(const char *icao_a, const char *icao_b)
+{
+	if (!icao_a || !icao_b) return -EINVAL;
+	struct aircraft_t a, b;
+	if (aircraft_db_lookup(icao_a, &a) != 0) return -ENOENT;
+	if (aircraft_db_lookup(icao_b, &b) != 0) return -ENOENT;
+
+	/* Lexicographic ordering, same as the natural pair_key path. */
+	const char *lo = icao_a, *hi = icao_b;
+	if (strcmp(icao_a, icao_b) > 0) { lo = icao_b; hi = icao_a; }
+
+	/* Synthesize an approach record that looks like an impact. The GUI
+	 * + history dashboard read sep / alt_diff_ft, so make them plausible. */
+	struct approach app = {
+		.tca_s       = 0.0,
+		.min_sep_m   = 0.0,
+		.diverging   = false,
+		.alt_diff_ft = 0,
+		.alt_valid   = (a.valid_mask & AIRCRAFT_VALID_ALT) &&
+			       (b.valid_mask & AIRCRAFT_VALID_ALT),
+	};
+
+	/* Emit the JSON frame (our GUI + InfluxDB + MQTT see it). */
+	emit_collision(lo, hi, COLLISION_CRASH, &app);
+
+	/* Also push the BLE CRASH frame so Will's sim freezes. Pick the
+	 * non-SIM side as the "other" ICAO. */
+	const char *other = lo;
+	if (a.source == SRC_BLE_SIM) other = (strcmp(icao_a, icao_b) > 0) ? icao_b : icao_a;
+	else if (b.source == SRC_BLE_SIM) other = (strcmp(icao_a, icao_b) > 0) ? icao_a : icao_b;
+	/* Defensive: clamp to lo/hi so we send a valid 3-byte ICAO. */
+	if (other != lo && other != hi) other = lo;
+	send_ble_crash(other);
+
+	LOG_WRN("CRASH manual trigger %s ↔ %s", lo, hi);
+	return 0;
+}
+
+int collision_diversion_send(enum collision_diversion d)
+{
+	/* Find the first BLE_SIM aircraft in the DB and address the diversion
+	 * to its current threat (or just self-target if no threat tracked). */
+	struct aircraft_t target = {0};
+	struct find_ctx ctx = { .out = &target, .found = false };
+	aircraft_db_for_each(find_ble_sim_cb, &ctx);
+	if (!ctx.found) return -ENOENT;
+
+	/* "other" for the BLE frame is informational only; Will's GUI shows
+	 * it in the diversion panel. Use the SIM's own ICAO as a stable
+	 * placeholder when no current threat is on the tracker. */
+	send_ble_diversion(target.icao, d);
 	return 0;
 }

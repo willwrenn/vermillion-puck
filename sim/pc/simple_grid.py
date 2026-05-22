@@ -326,6 +326,43 @@ def _clear_all():
     _clear_diversion()
     _log_clear_event()
 
+# ── CRASHED overlay (Stage 11) ───────────────────────────────────────────────
+# The controller sends a CRASH BLE frame to the mobile when two aircraft come
+# within 50 m horiz + 50 m vert. The mobile freezes physics for 10 s and
+# prints "WARN crash" to ttyACM0 — this overlay catches that and renders a
+# full-screen red CRASHED message for the matching 10 s, then auto-clears
+# when the mobile sends its post-reset "WARN clear" line.
+_crash_items = []   # canvas item ids that make up the overlay
+
+def _trigger_crash():
+    global _crash_items
+    if _crash_items:
+        return   # already on screen
+    rect = canvas.create_rectangle(0, 0, W, H, fill="#8b0000", outline="",
+                                   tags=("crashed",))
+    txt  = canvas.create_text(W / 2, H / 2 - 30, text="CRASHED",
+                              fill="white",
+                              font=("Helvetica", 96, "bold"),
+                              tags=("crashed",))
+    sub  = canvas.create_text(W / 2, H / 2 + 60,
+                              text="aircraft destroyed — respawning in 10 s",
+                              fill="white",
+                              font=("Helvetica", 18),
+                              tags=("crashed",))
+    _crash_items = [rect, txt, sub]
+    # Belt-and-suspenders: even if the mobile fails to send "WARN clear"
+    # after its 10 s reset, auto-clear ourselves at the same horizon.
+    root.after(10000, _clear_crash)
+
+def _clear_crash():
+    global _crash_items
+    for item in _crash_items:
+        try:
+            canvas.delete(item)
+        except Exception:
+            pass
+    _crash_items = []
+
 # ── Dot update ────────────────────────────────────────────────────────────────
 def handle_line(text):
     text = text.strip()
@@ -342,8 +379,13 @@ def handle_line(text):
         elif "WARN msg" in clean:
             msg = clean.split("WARN msg", 1)[1].strip()
             root.after(0, lambda m=msg: trigger_diversion(m))
+        elif "WARN crash" in clean:
+            # Stage 11 — full-screen red CRASHED overlay for 10 s.
+            root.after(0, _trigger_crash)
         elif "WARN clear" in clean:
             root.after(0, _clear_all)
+            # Also clear the CRASHED overlay if the mobile reset early.
+            root.after(0, _clear_crash)
         return
     try:
         lat = float(pkt["lat"])

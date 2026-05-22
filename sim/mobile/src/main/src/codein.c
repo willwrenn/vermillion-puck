@@ -49,6 +49,12 @@ static volatile bool g_warning_active;   // set by warning GATT write, cleared o
 static float    g_turn_rate = 0.0f;      // degrees per 200ms tick; 0 = straight
 static float    g_hdg_acc   = 0.0f;      // fractional heading accumulator for smooth circles
 
+/* Stage 11 — CRASH freeze. When the controller sends a CRASH frame
+ * (msg_type=0x05), we set this to k_uptime_get()+10000 ms; the send
+ * thread skips dead-reckoning while frozen, and crash_reset_fn snaps
+ * the aircraft back to St Lucia origin after the freeze window. */
+static volatile int64_t g_frozen_until_ms = 0;
+
 // Brisbane bounds
 #define LAT_MIN -278000000  // -27.8 (south)
 #define LAT_MAX -270000000  // -27.0 (north)
@@ -94,6 +100,26 @@ static void warning_clear_fn(struct k_work *work)
 	printk("WARN clear\n"); // GUI detects this line and stops flashing
 }
 static K_WORK_DELAYABLE_DEFINE(warning_clear_work, warning_clear_fn);
+
+/* Stage 11 — after the 10 s CRASH freeze, snap the aircraft back to St
+ * Lucia origin and clear all warning state. Same effect as the operator
+ * typing 'r' over ttyACM1 (process_gui_cmd case 'r'). */
+static void crash_reset_fn(struct k_work *work)
+{
+	g_lat            = -274975000;
+	g_lon            =  1530137000;
+	g_alt            = 100;
+	g_speed          = 0;
+	g_heading        = 0;
+	g_turn_rate      = 0.0f;
+	g_hdg_acc        = 0.0f;
+	g_warning_active = false;
+	g_frozen_until_ms = 0;
+	k_work_cancel_delayable(&warning_clear_work);
+	printk("WARN clear\n");    // GUI clears the CRASHED overlay
+	printk("RESET St Lucia\n"); // diagnostic line on ttyACM0
+}
+static K_WORK_DELAYABLE_DEFINE(crash_reset_work, crash_reset_fn);
 
 // GATT write handler — base pushes collision/diversion/message frames here
 static ssize_t warn_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -148,6 +174,32 @@ static ssize_t warn_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 		       w->icao[0], w->icao[1], w->icao[2], w->hdg_delta);
 		g_warning_active = true;
 		k_work_reschedule(&warning_clear_work, K_SECONDS(2));
+		/* Stage 11 — actually act on the suggestion. Most diversions
+		 * just shift heading by the small delta; the two sentinels
+		 * (-127 = HOLD/start circling, +127 = RTB/turn to St Lucia)
+		 * are interpreted specially. */
+		if (w->hdg_delta == -127) {
+			g_turn_rate = 6.0f;   /* gentle right circle (~ 36s/lap) */
+		} else if (w->hdg_delta == +127) {
+			/* RTB: rough bearing toward St Lucia origin from current
+			 * position. Simple atan2 in deg-units. */
+			float dlat = (float)(-274975000 - g_lat) / 1e7f;
+			float dlon = (float)( 1530137000 - g_lon) / 1e7f;
+			float brg = atan2f(dlon, dlat) * 180.0f / 3.14159f;
+			if (brg < 0) brg += 360.0f;
+			g_heading = (uint16_t)brg;
+			g_turn_rate = 0.0f;
+		} else {
+			int new_hdg = ((int)g_heading + (int)w->hdg_delta + 360) % 360;
+			g_heading = (uint16_t)new_hdg;
+		}
+		break;
+	case 0x05: // Stage 11 — CRASH: freeze 10 s then reset to St Lucia.
+		printk("WARN crash\n");   // Will's GUI shows full-screen overlay
+		g_frozen_until_ms = k_uptime_get() + 10000;
+		g_warning_active = true;
+		k_work_cancel_delayable(&warning_clear_work);
+		k_work_reschedule(&crash_reset_work, K_MSEC(10000));
 		break;
 	default:
 		break;
@@ -520,8 +572,17 @@ static void send_thread_fn(void *a, void *b, void *c)
 			task_wdt_feed(g_wdt_channel); //board resets if this doesn't run
 		}
 
+		// Stage 11 — CRASH freeze. While the 10 s window is open, skip
+		// heading update + dead-reckoning entirely so the aircraft stays
+		// pinned at the crash spot. We still fall through to the BLE
+		// notify below so the base sees the aircraft is still alive
+		// (just not moving). After the window, crash_reset_fn snaps us
+		// back to St Lucia.
+		bool frozen = (g_frozen_until_ms != 0) &&
+			      (k_uptime_get() < g_frozen_until_ms);
+
 		// Circle mode — rotate heading each tick before dead reckoning
-		if (g_turn_rate != 0.0f) {
+		if (!frozen && g_turn_rate != 0.0f) {
 			g_hdg_acc += g_turn_rate;
 			if (g_hdg_acc >= 360.0f) g_hdg_acc -= 360.0f;
 			if (g_hdg_acc <   0.0f)  g_hdg_acc += 360.0f;
@@ -533,13 +594,15 @@ static void send_thread_fn(void *a, void *b, void *c)
 		// at 200ms intervals: distance = speed * 0.514 * 0.2 = speed * 0.1028 metres per tick
 		// 1 degree lat ~ 111,000m so delta_lat = distance * cos(hdg) / 111000
 		// stored as int32 * 1e7 so multiply by 1e7
-		float hdg_rad = g_heading * 3.14159f / 180.0f;
-		float dist_m  = g_speed * 0.1028f; // metres per 200ms tick at given knots
-		float dlat    = (dist_m * cosf(hdg_rad)) / 111000.0f; // degrees
-		float dlon    = (dist_m * sinf(hdg_rad)) / (111000.0f * cosf((float)g_lat / 1e7f * 3.14159f / 180.0f));
-		g_lat += (int32_t)(dlat * 1e7f);
-		g_lon += (int32_t)(dlon * 1e7f);
-		clamp_position(); // keep within Brisbane bounds
+		if (!frozen) {
+			float hdg_rad = g_heading * 3.14159f / 180.0f;
+			float dist_m  = g_speed * 0.1028f; // metres per 200ms tick at given knots
+			float dlat    = (dist_m * cosf(hdg_rad)) / 111000.0f; // degrees
+			float dlon    = (dist_m * sinf(hdg_rad)) / (111000.0f * cosf((float)g_lat / 1e7f * 3.14159f / 180.0f));
+			g_lat += (int32_t)(dlat * 1e7f);
+			g_lon += (int32_t)(dlon * 1e7f);
+			clamp_position(); // keep within Brisbane bounds
+		}
 
 		// Flash red LED while base warning is active; keep red off when connected and clear
 		if (s_conn) {

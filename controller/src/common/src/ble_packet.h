@@ -122,6 +122,10 @@ enum ble_warning_msg_type {
 	BLE_WARN_MSG_COLLISION = 0x02,
 	BLE_WARN_MSG_DIVERSION = 0x03,
 	BLE_WARN_MSG_FREETEXT  = 0x04,
+	/* Stage 11 — terminal "you crashed" event. Sim mobile receives this
+	 * when pairwise sep <50 m horizontal + <50 m vertical, freezes for
+	 * 10 s, then resets to St Lucia origin. */
+	BLE_WARN_MSG_CRASH     = 0x05,
 };
 
 enum ble_warning_severity {

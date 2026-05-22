@@ -69,6 +69,13 @@ _STANDARDS = _find_standards()
 sys.path.insert(0, str(_STANDARDS))
 from json_protocol import validate, ProtocolError  # noqa: E402
 
+# Phase 10 sidecar publishers — both live next to this file (single source
+# of truth in vermillion-puck/controller/host/). Imported via the absolute
+# file path so the GUI runs from the symlink at scripts/stage6/ too.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from mqtt_publisher import MqttPublisher        # noqa: E402
+from influx_writer  import InfluxWriter         # noqa: E402
+
 from PyQt6.QtCore    import Qt, QTimer, QPointF, QRectF, pyqtSignal, QObject
 from PyQt6.QtGui     import (
     QFont, QColor, QBrush, QPen, QPolygonF, QPainter, QPixmap,
@@ -89,6 +96,12 @@ except ImportError:
 
 STALE_S = 10.0     # match firmware AIRCRAFT_DB_STALE_MS
 REFRESH_HZ = 2.0
+
+# Stage 11 — how long to hide a crashed aircraft from the map. Sim window
+# matches the mobile firmware's 10 s freeze-then-reset; real aircraft get
+# longer because they only reappear naturally on the next ADS-B frame.
+CRASH_HIDE_SIM_S  = 10.0
+CRASH_HIDE_REAL_S = 20.0
 
 
 def aircraft_colour(icao: str) -> QColor:
@@ -292,8 +305,9 @@ HISTORY_COLUMNS = ["ICAO A", "ICAO B", "Max", "Min sep (m)", "Δalt (ft)",
                    "Issued", "Updated"]
 HISTORY_CAP = 32
 
-_LEVEL_RANK = {"CLEAR": 0, "ADVISORY": 1, "WARNING": 2}
+_LEVEL_RANK = {"CLEAR": 0, "ADVISORY": 1, "WARNING": 2, "CRASH": 3}
 _LEVEL_BG = {
+    "CRASH":    QColor("#8b0000"),    # dark red — sticky, never downgrades
     "WARNING":  QColor("#a8132d"),
     "ADVISORY": QColor("#d9b400"),
     "CLEAR":    QColor("#45475a"),
@@ -427,11 +441,25 @@ class MapView(QGraphicsView):
         self._draw_grid()
         self._draw_center_marker(lat_center, lon_center)
 
+        # Zoom + track state. _user_zoom flips true once the operator zooms
+        # or pans; once true, resizeEvent stops force-refitting the scene so
+        # the user's view is preserved across window resizes. _track_icao,
+        # when set, makes refresh_view re-center on that aircraft each tick.
+        self._user_zoom: bool = False
+        self._track_icao: Optional[str] = None
+        # Zoom anchored on mouse cursor for wheel — feels like a real map
+        # (point under cursor stays put as you zoom in/out).
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        # We want keyboard events even when the user hasn't clicked yet.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
         # Corner badges (child widgets overlaid on the view). The link badge
         # tracks any incoming JSON; the BLE badge tracks BLE_SIM frames
         # specifically so we can show sim-node connection state.
         self.status_badge = self._make_badge("● NO DATA", "#f38ba8")
         self.ble_badge    = self._make_badge("● BLE   scanning…", "#f38ba8")
+        self.zoom_badge   = self._make_badge("⌖ ZOOM 1.0x", "#cdd6f4")
 
         # icao -> (polygon_item, label_item)
         self.items: Dict[str, Tuple[QGraphicsPolygonItem, QGraphicsSimpleTextItem]] = {}
@@ -445,6 +473,10 @@ class MapView(QGraphicsView):
         # AIRCRAFT_VALID_PRED on the frame.
         self.pred_lines: Dict[str, QGraphicsLineItem] = {}
         self.pred_heads: Dict[str, QGraphicsPolygonItem] = {}
+
+        # Render the initial zoom badge text now that all the bits it reads
+        # exist (status badges, transform, etc).
+        self._set_zoom_badge()
 
     def _badge_qss(self, fg: str) -> str:
         # Single f-string so the {{ / }} escapes resolve correctly. Splitting
@@ -474,7 +506,7 @@ class MapView(QGraphicsView):
         margin = 10
         gap = 6
         y = margin
-        for lbl in (self.status_badge, self.ble_badge):
+        for lbl in (self.status_badge, self.ble_badge, self.zoom_badge):
             lbl.adjustSize()
             x = max(margin, self.width() - lbl.width() - margin)
             lbl.move(x, y)
@@ -482,8 +514,181 @@ class MapView(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        # Only re-fit when the user hasn't taken control of the view. Once
+        # they've zoomed/clicked, preserve their transform across resizes
+        # (otherwise the window resize would silently undo their zoom).
+        if not self._user_zoom:
+            self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self._layout_badges()
+
+    # ---- zoom + track --------------------------------------------------- #
+    #
+    # Two interaction surfaces:
+    #   - Mouse wheel: zoom in/out anchored on the cursor.
+    #   - Left click:  enter track mode on the aircraft under the cursor
+    #                  (centerOn() each refresh); click empty space to untrack.
+    # Keyboard fallback: +/- to zoom, 0 to reset view, Esc to untrack.
+    #
+    # Zoom is implemented as a QGraphicsView transform — the underlying lat/
+    # lon math (to_xy, scene rect, basemap pixmap) is unchanged. The baked
+    # zoom-10 basemap PNG will get soft beyond ~4x zoom; re-bake at higher
+    # zoom (`python3 scripts/stage6/fetch_basemap.py --zoom 12`) for crisp
+    # closeups. Per-aircraft icon strokes are NOT pen-scaled, so they shrink
+    # at high zoom — kept that way so a swarm of close-by aircraft still
+    # looks like distinct dots rather than a blob.
+
+    # Zoom is expressed RELATIVE to fit-to-window so the badge is intuitive:
+    # 1.0x = the default fit; 4.0x = four times closer. Without this the
+    # badge would show raw matrix values like 0.659 (whatever fitInView
+    # happened to pick for the current viewport), which is meaningless.
+    USER_ZOOM_MIN = 1.0       # never zoom OUT past fit-to-window
+    USER_ZOOM_MAX = 16.0      # past this the baked PNG is too blurry to be useful
+
+    def _current_zoom(self) -> float:
+        return self.transform().m11()
+
+    def _fit_zoom(self) -> float:
+        """The matrix scale that fitInView(KeepAspectRatio) would currently
+        produce. Used as the unit for user-facing zoom values."""
+        vp = self.viewport()
+        if vp is None or vp.width() <= 0 or vp.height() <= 0:
+            return 1.0
+        sr = self.scene.sceneRect()
+        if sr.width() <= 0 or sr.height() <= 0:
+            return 1.0
+        return min(vp.width() / sr.width(), vp.height() / sr.height())
+
+    def _user_zoom_x(self) -> float:
+        f = self._fit_zoom()
+        return self._current_zoom() / f if f > 0 else 1.0
+
+    def _set_zoom_badge(self):
+        uz = self._user_zoom_x()
+        if self._track_icao:
+            txt = f"⌖ TRACK {self._track_icao}   {uz:.1f}x"
+            fg = "#a6e3a1"
+        elif self._user_zoom:
+            txt = f"⌖ ZOOM {uz:.1f}x  (0 = reset, click empty = untrack)"
+            fg = "#cdd6f4"
+        else:
+            txt = "⌖ ZOOM 1.0x  (wheel = zoom, click aircraft = track)"
+            fg = "#6c7086"
+        self.zoom_badge.setText(txt)
+        self.zoom_badge.setStyleSheet(self._badge_qss(fg))
+        self._layout_badges()
+
+    def _apply_zoom_factor(self, factor: float):
+        # Clamp the USER-facing zoom (relative to fit), not the raw matrix
+        # value, so the limits stay sensible no matter the viewport size.
+        uz_now = self._user_zoom_x()
+        uz_target = max(self.USER_ZOOM_MIN,
+                        min(self.USER_ZOOM_MAX, uz_now * factor))
+        factor = uz_target / uz_now if uz_now > 0 else 1.0
+        if abs(factor - 1.0) < 1e-3:
+            return
+        self.scale(factor, factor)
+        self._user_zoom = True
+        # Snap labels back to their screen-pixel offset from icons NOW so
+        # the user doesn't see them drift for up to 500 ms (next refresh).
+        self._reflow_labels()
+        self._set_zoom_badge()
+
+    def _reflow_labels(self):
+        """Reposition every aircraft label to keep its screen-pixel offset
+        from the icon constant after a zoom change. Same math as
+        render_entries' label setPos."""
+        z = max(self._current_zoom(), 1e-3)
+        for _icao, (poly, label) in self.items.items():
+            p = poly.pos()
+            label.setPos(p.x() + 8.0 / z, p.y() - 14.0 / z)
+
+    def _reset_view(self):
+        self._user_zoom = False
+        self._track_icao = None
+        self.resetTransform()
+        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self._set_zoom_badge()
+
+    def _aircraft_at(self, scene_pos: QPointF) -> Optional[str]:
+        """Return the ICAO whose icon is closest to scene_pos (within a small
+        view-pixel tolerance, so click targets remain comfortable at any
+        zoom). Returns None if nothing close enough."""
+        # 12-view-pixel tolerance converted to scene units via the current
+        # zoom — so clicks feel the same size regardless of zoom level.
+        tol = 12.0 / max(self._current_zoom(), 1e-3)
+        best_icao: Optional[str] = None
+        best_d = tol
+        for icao, (poly, _label) in self.items.items():
+            c = poly.pos()  # icon is positioned via setPos in render_entries
+            dx = c.x() - scene_pos.x()
+            dy = c.y() - scene_pos.y()
+            d = math.hypot(dx, dy)
+            if d < best_d:
+                best_d = d
+                best_icao = icao
+        return best_icao
+
+    def _update_track(self):
+        """Called from render_entries: re-center on the tracked aircraft.
+        If the tracked aircraft drops out of the DB (stale-evicted), exit
+        track mode silently — the badge tells the user."""
+        if not self._track_icao:
+            return
+        pair = self.items.get(self._track_icao)
+        if pair is None:
+            self._track_icao = None
+            self._set_zoom_badge()
+            return
+        self.centerOn(pair[0])
+
+    def wheelEvent(self, event):
+        # Mouse wheel sends ~120 angleDelta per notch → 1.15x per notch.
+        # Trackpads send many small deltas (~1-8) per pixel of scroll;
+        # treating each as a full notch would zoom-to-max in one swipe.
+        # Scale factor exponentially by delta so behaviour matches across
+        # input devices: one mouse notch ≈ 1.15x, a soft trackpad nudge
+        # ≈ 1.01x. Sensitivity tuned so a 1-finger flick on a Mac trackpad
+        # zooms about as much as 4 mouse notches.
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        factor = math.pow(1.15, delta / 120.0)
+        self._apply_zoom_factor(factor)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        scene_pos = self.mapToScene(event.pos())
+        icao = self._aircraft_at(scene_pos)
+        if icao is not None:
+            self._track_icao = icao
+            self._user_zoom = True
+            self._set_zoom_badge()
+            # Snap-center immediately so the click feels responsive even
+            # before the next refresh tick.
+            self.centerOn(self.items[icao][0])
+        else:
+            # Click on empty map → untrack but preserve zoom.
+            if self._track_icao is not None:
+                self._track_icao = None
+                self._set_zoom_badge()
+            super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        k = event.key()
+        if k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self._apply_zoom_factor(1.25)
+        elif k == Qt.Key.Key_Minus:
+            self._apply_zoom_factor(1.0 / 1.25)
+        elif k == Qt.Key.Key_0:
+            self._reset_view()
+        elif k == Qt.Key.Key_Escape:
+            if self._track_icao is not None:
+                self._track_icao = None
+                self._set_zoom_badge()
+        else:
+            super().keyPressEvent(event)
 
     def set_status(self, text: str, fg: str):
         self.status_badge.setText(text)
@@ -539,7 +744,12 @@ class MapView(QGraphicsView):
         self.scene.addItem(item)
 
     def _draw_grid(self):
+        # Cosmetic pen: line width stays in screen pixels regardless of zoom.
+        # Without this every line in the scene (grid, border, center marker,
+        # trails, prediction dashes) gets multiplied in thickness as you
+        # zoom in — at 16x a 2-px trail becomes a 32-px slab.
         grid_pen  = QPen(QColor("#2a3a4a"))
+        grid_pen.setCosmetic(True)
         label_pen = QColor("#546e7a")
         font = QFont("monospace", 8)
 
@@ -563,12 +773,14 @@ class MapView(QGraphicsView):
 
         border = QPen(QColor("#4fc3f7"))
         border.setWidth(2)
+        border.setCosmetic(True)
         self.scene.addRect(0, 0, self.SCENE_W, self.SCENE_H, border)
 
     def _draw_center_marker(self, lat: float, lon: float):
         x, y = self.to_xy(lat, lon)
         pen = QPen(QColor("#f9e2af"))
         pen.setWidth(1)
+        pen.setCosmetic(True)
         self.scene.addLine(x - 6, y, x + 6, y, pen)
         self.scene.addLine(x, y - 6, x, y + 6, pen)
 
@@ -625,6 +837,7 @@ class MapView(QGraphicsView):
             c.setAlpha(alpha)
             pen = QPen(c)
             pen.setWidth(2)
+            pen.setCosmetic(True)   # stay 2 px on screen at any zoom
             segs[i].setPen(pen)
             segs[i].setLine(x1, y1, x2, y2)
 
@@ -663,6 +876,7 @@ class MapView(QGraphicsView):
         pen = QPen(colour)
         pen.setWidth(2)
         pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)   # 2-px dashes on screen at any zoom
         line.setPen(pen)
         line.setLine(x0, y0, x1, y1)
 
@@ -675,6 +889,9 @@ class MapView(QGraphicsView):
             ]))
             head.setPen(QPen(Qt.GlobalColor.black, 0.5))
             head.setZValue(-0.4)
+            # Same as aircraft icons: stay constant pixel size at any zoom.
+            head.setFlag(
+                QGraphicsPolygonItem.GraphicsItemFlag.ItemIgnoresTransformations)
             self.scene.addItem(head)
             self.pred_heads[icao] = head
         head.setBrush(QBrush(colour))
@@ -682,8 +899,10 @@ class MapView(QGraphicsView):
         head.setRotation(math.degrees(math.atan2(y1 - y0, x1 - x0)))
 
     def render_entries(self, entries: Dict[str, Tuple[dict, float]], now: float,
-                       red_icaos: Optional[set] = None):
+                       red_icaos: Optional[set] = None,
+                       crashed_icaos: Optional[set] = None):
         red_icaos = red_icaos or set()
+        crashed_icaos = crashed_icaos or set()
         # Update / add
         for icao, (frame, recv_t) in entries.items():
             lat = frame.get("lat"); lon = frame.get("lon")
@@ -691,6 +910,26 @@ class MapView(QGraphicsView):
                 continue
             x, y = self.to_xy(lat, lon)
             age = now - recv_t
+
+            # Stage 11 — crashed aircraft are hidden from the map while
+            # their respawn window is open. Hide existing items (if any)
+            # and skip the trail/prediction updates so nothing else for
+            # this ICAO renders either. When the window closes (icao
+            # drops out of crashed_icaos), the next tick goes through
+            # the normal path and they reappear.
+            if icao in crashed_icaos:
+                existing = self.items.get(icao)
+                if existing is not None:
+                    existing[0].setVisible(False)
+                    existing[1].setVisible(False)
+                head = self.pred_heads.get(icao)
+                if head is not None:
+                    head.setVisible(False)
+                line = self.pred_lines.get(icao)
+                if line is not None:
+                    line.setVisible(False)
+                continue
+
             if icao in red_icaos:
                 colour = QColor("#f38ba8")    # Catppuccin red — collision flag
             else:
@@ -707,11 +946,25 @@ class MapView(QGraphicsView):
             if poly_item is None:
                 poly_item = QGraphicsPolygonItem(self._aircraft_polygon())
                 poly_item.setPen(QPen(Qt.GlobalColor.black, 0.5))
+                # Screen-space sizing: position still follows zoom + pan, but
+                # the icon glyph + text draw at constant pixel size. Without
+                # this, zooming in 8x makes the icons 8x bigger and obscures
+                # exactly what you're trying to see. (Trails + prediction
+                # lines DO scale with the world — they convey distance.)
+                poly_item.setFlag(
+                    QGraphicsPolygonItem.GraphicsItemFlag.ItemIgnoresTransformations)
                 self.scene.addItem(poly_item)
                 label_item = QGraphicsSimpleTextItem(icao)
                 label_item.setFont(QFont("monospace", 8))
+                label_item.setFlag(
+                    QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
                 self.scene.addItem(label_item)
                 self.items[icao] = (poly_item, label_item)
+
+            # Stage 11 — un-hide if the respawn window just closed; safe
+            # to call every tick.
+            poly_item.setVisible(True)
+            label_item.setVisible(True)
 
             poly_item.setBrush(QBrush(colour))
             poly_item.setPos(x, y)
@@ -720,7 +973,13 @@ class MapView(QGraphicsView):
                 poly_item.setRotation(hdg)
 
             label_item.setBrush(QBrush(colour))
-            label_item.setPos(x + 8, y - 14)
+            # Both icon + label are ItemIgnoresTransformations, so their
+            # POSITIONS still live in scene units. Without dividing the
+            # offset by zoom, the label drifts away from the icon as you
+            # zoom in (8 scene-units = 8·zoom screen-pixels). Dividing
+            # keeps the label exactly 8 screen pixels right + 14 up.
+            z = max(self._current_zoom(), 1e-3)
+            label_item.setPos(x + 8.0 / z, y - 14.0 / z)
 
             # Stage 7.4 — dashed line to Kalman 10 s-ahead position.
             self._update_pred(icao, x, y,
@@ -734,6 +993,10 @@ class MapView(QGraphicsView):
                 self.scene.removeItem(poly_item)
                 self.scene.removeItem(label_item)
                 self._drop_trail(icao)
+
+        # If track mode is on, re-center on the tracked aircraft AFTER all
+        # positions for this tick have been written.
+        self._update_track()
 
 
 # ---------------------------------------------------------------------- #
@@ -779,11 +1042,33 @@ class AtcMainWindow(QMainWindow):
         # — controller already emits them lexicographically sorted.
         # Value: (level_str, tca_s, min_sep_m, alt_diff_ft|None, last_seen_t)
         self.alerts: Dict[Tuple[str, str], Tuple] = {}
+        # Stage 11: crashed aircraft -> wall-clock time after which they
+        # become visible again. While in this map, render_entries skips
+        # the icon (both real aircraft and sim) so the map shows the
+        # crash + respawn cycle. Sim: 10 s matches Will's freeze + reset.
+        # Real: 20 s — they reappear naturally when fresh ADS-B arrives.
+        self._crashed: Dict[str, float] = {}
 
         # Persistent collision-history model + widget (always built so that
         # _on_collision can safely write to it even in map/table-only modes).
         self.history = CollisionHistoryModel()
         self.history_table = CollisionHistoryTable()
+
+        # Phase 10 — publish CollisionFrame events out-of-process so an
+        # InfluxDB dashboard + external MQTT subscribers can render the
+        # same data. Both are best-effort: if MQTT broker is down or
+        # InfluxDB creds are missing, .start() returns False and the GUI
+        # carries on without them.
+        self.mqtt   = MqttPublisher()
+        self.influx = InfluxWriter()
+        self._mqtt_ok   = self.mqtt.start()
+        self._influx_ok = self.influx.start()
+        if not self._mqtt_ok:
+            print(f"[gui] MQTT publisher disabled: {self.mqtt.stats.last_error}",
+                  file=sys.stderr)
+        if not self._influx_ok:
+            print(f"[gui] InfluxDB writer disabled: {self.influx.stats.last_error}",
+                  file=sys.stderr)
 
         self.table = AircraftTable() if view_mode != "map" else None
         self.map   = MapView(lat_center, lon_center, span_deg) \
@@ -841,8 +1126,11 @@ class AtcMainWindow(QMainWindow):
 
     def _set_banner_style(self, flash: bool, level: str = "WARNING"):
         # Two-tone pulse, palette depends on worst level currently shown.
-        # WARNING  -> red    ADVISORY -> amber/yellow    CLEAR -> grey
-        if level == "WARNING":
+        # CRASH -> dark-red (no flash — terminal)   WARNING -> red flash
+        # ADVISORY -> amber/yellow                   CLEAR -> grey
+        if level == "CRASH":
+            bg = "#8b0000"   # dark red; sticky for the whole hide window
+        elif level == "WARNING":
             bg = "#f38ba8" if flash else "#a8132d"
         elif level == "ADVISORY":
             bg = "#f9e2af" if flash else "#d9b400"
@@ -869,6 +1157,21 @@ class AtcMainWindow(QMainWindow):
             self.last_ble_frame_t = recv_t
             self.last_ble_icao = icao
 
+    def closeEvent(self, event):
+        """Tear down sidecar publishers cleanly so the broker's last-will
+        doesn't fire spuriously and the InfluxDB client closes its
+        connection pool. Daemon threads would die anyway but explicit
+        shutdown keeps logs tidy."""
+        try:
+            if self._mqtt_ok:
+                self.mqtt.stop()
+        finally:
+            try:
+                if self._influx_ok:
+                    self.influx.stop()
+            finally:
+                super().closeEvent(event)
+
     def _on_collision(self, frame: dict, recv_t: float):
         key = (frame.get("icao_a", ""), frame.get("icao_b", ""))
         if not key[0] or not key[1]:
@@ -880,9 +1183,26 @@ class AtcMainWindow(QMainWindow):
         # Always feed the collision-history dashboard (it has its own logic
         # about WARNING/ADVISORY entries persisting after CLEAR).
         self.history.on_event(key, level, tca, sep, alt_d, recv_t)
+        # Phase 10 fan-out: every CollisionFrame goes to MQTT (live push to
+        # external subscribers) AND InfluxDB Cloud (time-series store for
+        # the dashboard's Active alerts table). Both are non-blocking; if
+        # the broker / network is down the message is dropped silently.
+        if self._mqtt_ok:
+            self.mqtt.publish_collision(frame)
+        if self._influx_ok:
+            self.influx.write_collision(frame)
         if level == "CLEAR":
             self.alerts.pop(key, None)
             return
+        # Stage 11 — CRASH: hide both aircraft from the map. SIM gets the
+        # shorter window so it matches the mobile's freeze-and-respawn;
+        # everything else gets the longer window.
+        if level == "CRASH":
+            for icao in (key[0], key[1]):
+                entry = self.entries.get(icao)
+                src = entry[0].get("source", "") if entry else ""
+                hide_for = CRASH_HIDE_SIM_S if src == "BLE_SIM" else CRASH_HIDE_REAL_S
+                self._crashed[icao] = recv_t + hide_for
         self.alerts[key] = (level, tca, sep, alt_d, recv_t)
 
     def refresh_view(self):
@@ -891,10 +1211,27 @@ class AtcMainWindow(QMainWindow):
             if now - self.entries[icao][1] > STALE_S:
                 del self.entries[icao]
 
+        # Stage 11 — expire the crashed-aircraft hide window. After this,
+        # the icon comes back on the next render tick (the underlying
+        # self.entries row was never removed; we just hid it visually).
+        for icao in list(self._crashed.keys()):
+            if now >= self._crashed[icao]:
+                del self._crashed[icao]
+
         # Stage 8.4 — expire alerts that haven't been refreshed in 3 s
         # (controller emits every 1 s when WARNING-active; 3 s is safe
         # against transient frame loss). Collect set of ICAOs to highlight.
+        # CRASH alerts skip this expiry: they're terminal and stay visible
+        # in the banner for the full hide window.
         for k in list(self.alerts.keys()):
+            lvl = self.alerts[k][0]
+            if lvl == "CRASH":
+                # CRASH banner survives until either ICAO comes off the
+                # _crashed map (covered by the cleanup above + this check).
+                a, b = k
+                if a not in self._crashed and b not in self._crashed:
+                    del self.alerts[k]
+                continue
             if now - self.alerts[k][4] > 3.0:
                 del self.alerts[k]
         red_icaos = set()
@@ -906,7 +1243,8 @@ class AtcMainWindow(QMainWindow):
             self.table.render_entries(self.entries, now)
         self.history_table.render_rows(self.history, now)
         if self.map is not None:
-            self.map.render_entries(self.entries, now, red_icaos=red_icaos)
+            self.map.render_entries(self.entries, now, red_icaos=red_icaos,
+                                    crashed_icaos=set(self._crashed.keys()))
             # Corner #1 — overall link freshness (any source).
             since = (now - self.last_frame_t) if self.last_frame_t else 1e9
             if since < 1.0:
@@ -940,12 +1278,15 @@ class AtcMainWindow(QMainWindow):
         # Stage 8.4 — refresh the alert banner.
         if self.alerts:
             # Worst level first; flash background between two reds each tick.
-            order = {"WARNING": 0, "ADVISORY": 1, "CLEAR": 2}
+            order = {"CRASH": 0, "WARNING": 1, "ADVISORY": 2, "CLEAR": 3}
             items = sorted(self.alerts.items(),
                            key=lambda kv: (order.get(kv[1][0], 9), kv[0]))
             lines = []
             for (a, b), (lvl, tca, sep, alt_d, _) in items[:4]:   # cap to 4 visible
-                if alt_d is None:
+                if lvl == "CRASH":
+                    # Terminal — drop the live numerics and announce death.
+                    lines.append(f"CRASHED: {a} ↔ {b}")
+                elif alt_d is None:
                     lines.append(f"{lvl}: {a} ↔ {b} · {sep:.0f} m · in {tca:.1f} s")
                 else:
                     lines.append(
@@ -953,8 +1294,14 @@ class AtcMainWindow(QMainWindow):
                     )
             self.alert_banner.setText("    ".join(lines))
             self._alert_flash = not self._alert_flash
-            # Worst-level drives the colour: any WARNING -> red, else amber.
-            worst = "WARNING" if any(v[0] == "WARNING" for v in self.alerts.values()) else "ADVISORY"
+            # Worst-level drives the colour: CRASH > WARNING > ADVISORY.
+            levels = {v[0] for v in self.alerts.values()}
+            if "CRASH" in levels:
+                worst = "CRASH"
+            elif "WARNING" in levels:
+                worst = "WARNING"
+            else:
+                worst = "ADVISORY"
             self._set_banner_style(flash=self._alert_flash, level=worst)
             self.alert_banner.setVisible(True)
         else:

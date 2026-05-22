@@ -24,6 +24,8 @@
 #include "db_publisher.h"
 #include "kalman.h"
 #include "collision.h"
+#include "missile.h"
+#include "imm.h"
 
 //Purpose: This function prints the fields of a parsed `struct aircraft_t` 
 // to the shell.
@@ -390,6 +392,100 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_kalman,
 	SHELL_SUBCMD_SET_END
 );
 
+/* ---------- skywatch imm ... ----------------------------------------- */
+
+static int cmd_imm_on(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	g_imm_enabled = true;
+	shell_print(sh, "IMM enabled — pred_lat/pred_lon now use the CV+CT fused estimate");
+	return 0;
+}
+
+static int cmd_imm_off(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	g_imm_enabled = false;
+	shell_print(sh, "IMM disabled — pred_lat/pred_lon revert to CV-only Kalman");
+	return 0;
+}
+
+static int cmd_imm_show(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	shell_print(sh, "enabled=%s  q_omega=%.3f rad/s",
+		    g_imm_enabled ? "yes" : "no", g_imm_q_omega);
+	return 0;
+}
+
+/* Per-aircraft mode probabilities. Looks up by ICAO; if none given, dumps
+ * the first BLE_SIM aircraft (typically Will's mobile) since that's the
+ * one running circles to show off CT identification. */
+struct imm_dump_ctx { const char *want_icao; const struct shell *sh; int dumped; };
+static bool imm_dump_cb(const struct aircraft_db_entry *e, void *user)
+{
+	struct imm_dump_ctx *ctx = user;
+	bool match = ctx->want_icao
+		     ? (strncmp(e->ac.icao, ctx->want_icao,
+				AIRCRAFT_ICAO_BUF_LEN) == 0)
+		     : (e->ac.source == SRC_BLE_SIM);
+	if (!match) return true;
+	shell_print(ctx->sh,
+		    "%s  p(CV)=%.2f p(CT)=%.2f  omega=%+.3f rad/s (%+.1f°/s)  updates=%u",
+		    e->ac.icao,
+		    e->imm.mode_probs[0], e->imm.mode_probs[1],
+		    e->imm.ct.x[4],
+		    e->imm.ct.x[4] * (180.0 / 3.14159265358979323846),
+		    e->imm.cv.update_count);
+	ctx->dumped++;
+	return ctx->want_icao ? false : true;   /* keep going if no filter */
+}
+
+static int cmd_imm_stats(const struct shell *sh, size_t argc, char **argv)
+{
+	const char *want = (argc > 1) ? argv[1] : NULL;
+	struct imm_dump_ctx ctx = { .want_icao = want, .sh = sh, .dumped = 0 };
+	aircraft_db_for_each(imm_dump_cb, &ctx);
+	if (ctx.dumped == 0) {
+		shell_print(sh, "no %s aircraft in DB",
+			    want ? want : "BLE_SIM");
+	}
+	return 0;
+}
+
+/* 1000-iteration predict+update microbench. Plan bar: <10 ms per call
+ * (looser than CV's 5 ms — CT EKF adds work). */
+static int cmd_imm_bench(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	struct imm_state s;
+	imm_init(&s, -27.4975, 153.0137);
+	double lat = -27.4975, lon = 153.0137;
+
+	int64_t t_start = k_uptime_ticks();
+	for (int i = 0; i < 1000; i++) {
+		imm_predict(&s, 0.5);
+		lat += 1e-5;
+		lon += 1e-5;
+		imm_update(&s, lat, lon);
+	}
+	int64_t t_end = k_uptime_ticks();
+
+	uint64_t us = k_ticks_to_us_near64((uint64_t)(t_end - t_start));
+	shell_print(sh, "1000 iterations: total=%llu us, avg=%llu us/call (limit 10000)",
+		    (unsigned long long)us, (unsigned long long)(us / 1000));
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_imm,
+	SHELL_CMD(on,    NULL, "Use IMM fused estimate for pred_lat/pred_lon.", cmd_imm_on),
+	SHELL_CMD(off,   NULL, "Revert to CV-only Kalman for predictions.",     cmd_imm_off),
+	SHELL_CMD(show,  NULL, "Print enabled flag + q_omega tuning.",          cmd_imm_show),
+	SHELL_CMD(stats, NULL, "Per-aircraft mode probs + ω. Optional [icao].", cmd_imm_stats),
+	SHELL_CMD(bench, NULL, "1000-iteration predict+update timing (CV+CT).", cmd_imm_bench),
+	SHELL_SUBCMD_SET_END
+);
+
 /* ---------- skywatch collision ... ----------------------------------- */
 
 static int cmd_collision_stats(const struct shell *sh, size_t argc, char **argv)
@@ -469,6 +565,89 @@ static int cmd_collision_ghost_stop(const struct shell *sh, size_t argc, char **
 	return 0;
 }
 
+/* Stage 11 — manual CRASH trigger.
+ *   skywatch collision crash <icao_a> <icao_b>
+ * Synthesises a CRASH JSON frame + fires the BLE CRASH frame to Will.
+ * Useful for testing the GUI overlay + sim freeze without needing a
+ * real impact. */
+static int cmd_collision_crash(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc != 3) {
+		shell_error(sh, "usage: skywatch collision crash <icao_a> <icao_b>");
+		return -EINVAL;
+	}
+	int rc = collision_crash_trigger(argv[1], argv[2]);
+	if (rc == -ENOENT) {
+		shell_error(sh, "one of the ICAOs is not in the DB");
+		return rc;
+	}
+	if (rc) {
+		shell_error(sh, "crash trigger failed: %d", rc);
+		return rc;
+	}
+	shell_print(sh, "CRASH %s ↔ %s emitted (GUI hides icons; sim freezes 10 s)",
+		    argv[1], argv[2]);
+	return 0;
+}
+
+/* ---------- skywatch missile ... ------------------------------------- */
+
+static int cmd_missile_launch(const struct shell *sh, size_t argc, char **argv)
+{
+	/* Positional optional args: [ttl_s] [turn_rate_dps] [speed_kt]
+	 * Pass <=0 for any arg (or omit) to use that arg's default.
+	 *
+	 * Examples:
+	 *   skywatch missile launch                 → ttl=60s turn=15°/s 500kt
+	 *   skywatch missile launch 30              → fast, 30 s TTL
+	 *   skywatch missile launch 90 8            → easier to dodge (turn=8°/s)
+	 *   skywatch missile launch 60 5 300        → slow + ponderous
+	 */
+	double ttl  = (argc > 1) ? strtod(argv[1], NULL) : -1.0;
+	double turn = (argc > 2) ? strtod(argv[2], NULL) : -1.0;
+	double spd  = (argc > 3) ? strtod(argv[3], NULL) : -1.0;
+
+	int rc = missile_launch(ttl, turn, spd);
+	if (rc == -ENOENT) {
+		shell_error(sh, "missile: no BLE_SIM target in DB — connect Will's mobile first");
+		return rc;
+	}
+	if (rc) {
+		shell_error(sh, "missile: launch failed: %d", rc);
+		return rc;
+	}
+	shell_print(sh,
+		    "missile m1s51l launched from UQ St Lucia: ttl=%s turn=%s speed=%s",
+		    (argc > 1) ? argv[1] : "60s (default)",
+		    (argc > 2) ? argv[2] : "15°/s (default)",
+		    (argc > 3) ? argv[3] : "500kt (default)");
+	shell_print(sh, "auto-cancels on impact (~300m horiz) or TTL expiry");
+	return 0;
+}
+
+static int cmd_missile_cancel(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	int rc = missile_cancel();
+	if (rc == -EALREADY) {
+		shell_print(sh, "no missile in flight");
+		return 0;
+	}
+	shell_print(sh, "missile cancelled; m1s51l will stale-evict in ~10 s");
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_missile,
+	SHELL_CMD(launch, NULL,
+		  "Launch a pursuit missile from UQ St Lucia. "
+		  "Usage: launch [ttl_s] [turn_rate_dps] [speed_kt]",
+		  cmd_missile_launch),
+	SHELL_CMD(cancel, NULL,
+		  "Abort the in-flight missile (DB entry stale-evicts in ~10 s).",
+		  cmd_missile_cancel),
+	SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_collision,
 	SHELL_CMD(stats,      NULL, "Print collision counters.",
 		  cmd_collision_stats),
@@ -480,6 +659,50 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_collision,
 		  cmd_collision_ghost),
 	SHELL_CMD(ghost_stop, NULL, "Stop the ghost dead-reckoning (lets gh05t1 stale-evict).",
 		  cmd_collision_ghost_stop),
+	SHELL_CMD(crash,      NULL, "Manually trigger CRASH between two ICAOs. Usage: crash <icao_a> <icao_b>",
+		  cmd_collision_crash),
+	SHELL_SUBCMD_SET_END
+);
+
+/* ---------- skywatch diversion ... ----------------------------------- */
+
+static int cmd_diversion(const struct shell *sh, size_t argc, char **argv,
+			 enum collision_diversion d)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	int rc = collision_diversion_send(d);
+	if (rc == -ENOENT) {
+		shell_error(sh, "no BLE_SIM aircraft in DB to address");
+		return rc;
+	}
+	if (rc) {
+		shell_error(sh, "BLE send failed: %d", rc);
+		return rc;
+	}
+	shell_print(sh, "diversion %s sent to sim", collision_diversion_str(d));
+	return 0;
+}
+
+static int cmd_div_left(const struct shell *s, size_t a, char **v)
+	{ return cmd_diversion(s, a, v, DIVERSION_LEFT); }
+static int cmd_div_right(const struct shell *s, size_t a, char **v)
+	{ return cmd_diversion(s, a, v, DIVERSION_RIGHT); }
+static int cmd_div_climb(const struct shell *s, size_t a, char **v)
+	{ return cmd_diversion(s, a, v, DIVERSION_CLIMB); }
+static int cmd_div_descend(const struct shell *s, size_t a, char **v)
+	{ return cmd_diversion(s, a, v, DIVERSION_DESCEND); }
+static int cmd_div_rtb(const struct shell *s, size_t a, char **v)
+	{ return cmd_diversion(s, a, v, DIVERSION_RTB); }
+static int cmd_div_hold(const struct shell *s, size_t a, char **v)
+	{ return cmd_diversion(s, a, v, DIVERSION_HOLD); }
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_diversion,
+	SHELL_CMD(left,    NULL, "Suggest -30° left turn.",      cmd_div_left),
+	SHELL_CMD(right,   NULL, "Suggest +30° right turn.",     cmd_div_right),
+	SHELL_CMD(climb,   NULL, "Suggest +1000 ft climb.",      cmd_div_climb),
+	SHELL_CMD(descend, NULL, "Suggest -1000 ft descend.",    cmd_div_descend),
+	SHELL_CMD(rtb,     NULL, "Return-to-base (head to UQ).", cmd_div_rtb),
+	SHELL_CMD(hold,    NULL, "Enter holding circle.",        cmd_div_hold),
 	SHELL_SUBCMD_SET_END
 );
 
@@ -490,7 +713,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_skywatch,
 	SHELL_CMD(ble, &sub_ble, "BLE central / bridge subcommands.", NULL),
 	SHELL_CMD(db,  &sub_db,  "Aircraft database subcommands.", NULL),
 	SHELL_CMD(kalman, &sub_kalman, "Kalman filter tuning + bench.", NULL),
+	SHELL_CMD(imm,    &sub_imm,    "IMM (CV+CT) filter A/B toggle + stats.", NULL),
 	SHELL_CMD(collision, &sub_collision, "Collision detection.", NULL),
+	SHELL_CMD(diversion, &sub_diversion, "Manual diversion suggestion to the BLE sim.", NULL),
+	SHELL_CMD(missile, &sub_missile, "Pursuit-missile demo.", NULL),
 	SHELL_CMD(test_json, NULL,
 		  "Parse hardcoded ADS-B JSON samples and print each struct field.",
 		  cmd_skywatch_test_json),

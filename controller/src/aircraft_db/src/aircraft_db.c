@@ -113,11 +113,14 @@ int aircraft_db_upsert(const struct aircraft_t *src)
 		e->ac           = *src;          /* freshest observation wins */
 		e->last_seen_ms = now_ms;
 		s_stats.updates++;
-		/* Run the KF on the new measurement. */
 		double dt = (now_ms - prev_ms) / 1000.0;
 		if (dt <= 0.0) dt = 0.001;        /* guard against same-ms updates */
+		/* Always run BOTH filters: keeps live A/B (`skywatch imm on|off`)
+		 * comparing apples to apples on identical measurement streams. */
 		kalman_predict(&e->kf, dt);
 		kalman_update(&e->kf, src->lat, src->lon);
+		imm_predict(&e->imm, dt);
+		imm_update(&e->imm, src->lat, src->lon);
 		rc = 0;
 	} else {
 		e = pool_alloc();
@@ -128,19 +131,28 @@ int aircraft_db_upsert(const struct aircraft_t *src)
 		}
 		e->ac           = *src;
 		e->last_seen_ms = now_ms;
-		kalman_init(&e->kf, src->lat, src->lon);
+		kalman_init(&e->kf,  src->lat, src->lon);
 		kalman_update(&e->kf, src->lat, src->lon);
+		imm_init(&e->imm,    src->lat, src->lon);
+		imm_update(&e->imm,  src->lat, src->lon);
 		sys_slist_append(&s_list, &e->node);
 		s_stats.inserts++;
 		insert = true;
 		rc = 1;
 	}
 
-	/* After the KF update: publish a 10 s-ahead prediction once the filter
-	 * has converged (>= AIRCRAFT_PRED_MIN_UPDATES measurements). */
+	/* After the update: publish a 10 s-ahead prediction once the filter
+	 * has converged (>= AIRCRAFT_PRED_MIN_UPDATES measurements). The IMM
+	 * shares the CV mode's update_count, so the convergence gate is the
+	 * same regardless of which filter is currently selected. */
 	if (e->kf.update_count >= AIRCRAFT_PRED_MIN_UPDATES) {
-		kalman_predict_ahead(&e->kf, AIRCRAFT_PRED_HORIZON_S,
-				     &e->ac.pred_lat, &e->ac.pred_lon);
+		if (g_imm_enabled) {
+			imm_predict_ahead(&e->imm, AIRCRAFT_PRED_HORIZON_S,
+					  &e->ac.pred_lat, &e->ac.pred_lon);
+		} else {
+			kalman_predict_ahead(&e->kf, AIRCRAFT_PRED_HORIZON_S,
+					     &e->ac.pred_lat, &e->ac.pred_lon);
+		}
 		e->ac.valid_mask |= AIRCRAFT_VALID_PRED;
 	}
 	(void)insert;

@@ -27,6 +27,13 @@
 #define COLLISION_ADVISORY_SEP_M   1000.0
 #define COLLISION_ADVISORY_TCA_S   60.0
 
+/* Stage 11 — CRASH thresholds. Tight enough that a normal evasion clears
+ * them; only direct hits trip the level. If one aircraft has no altitude
+ * reported, only the horizontal threshold applies (matches the missile
+ * module's IMPACT check in missile.c). */
+#define COLLISION_CRASH_SEP_M      50.0
+#define COLLISION_CRASH_VERT_FT    164   /* ~50 m */
+
 /* Vertical-separation gate. If both aircraft report altitude AND the
  * difference exceeds this, the pair is force-CLEAR regardless of
  * horizontal geometry. 1000 ft mirrors the standard ATC vertical
@@ -39,6 +46,20 @@ enum collision_level {
 	COLLISION_CLEAR    = 0,
 	COLLISION_ADVISORY = 1,
 	COLLISION_WARNING  = 2,
+	COLLISION_CRASH    = 3,   /* Stage 11 — terminal; fires once per pair */
+};
+
+/* Diversion suggestion sent to the BLE sim on every WARNING transition.
+ * The picker chooses one based on relative geometry; Will's mobile
+ * firmware already handles MSG_DIVERSION frames and prints them, and
+ * his GUI shows them in the orange panel. */
+enum collision_diversion {
+	DIVERSION_LEFT    = 0,   /* turn -30°  */
+	DIVERSION_RIGHT   = 1,   /* turn +30°  */
+	DIVERSION_CLIMB   = 2,   /* +1000 ft   */
+	DIVERSION_DESCEND = 3,   /* -1000 ft   */
+	DIVERSION_RTB     = 4,   /* head toward UQ St Lucia */
+	DIVERSION_HOLD    = 5,   /* enter holding circle    */
 };
 
 const char *collision_level_str(enum collision_level lvl);
@@ -87,5 +108,18 @@ int  collision_ghost_start(double tca_s, double miss_m, int alt_ft);
 
 /* Stop the ghost worker. Ghost stale-evicts naturally after 10 s. */
 int  collision_ghost_stop(void);
+
+/* Stage 11 — manually trigger a CRASH event between two ICAOs (test path
+ * for the GUI overlay + sim freeze without needing a real impact).
+ * Returns -ENOENT if either ICAO isn't currently in the DB. */
+int  collision_crash_trigger(const char *icao_a, const char *icao_b);
+
+/* Stage 11 — manually send a diversion suggestion to whichever BLE_SIM
+ * aircraft is in the DB. Returns -ENOENT if no SIM target, or the
+ * ble_central_send_warning() result code on attempted send. */
+int  collision_diversion_send(enum collision_diversion d);
+
+/* Human-readable name for a diversion (LEFT/RIGHT/CLIMB/...). */
+const char *collision_diversion_str(enum collision_diversion d);
 
 #endif /* COLLISION_H */
