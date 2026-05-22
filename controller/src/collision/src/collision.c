@@ -67,14 +67,20 @@ struct tracked_pair {
 	enum collision_level level;  /* last reported level (non-CLEAR) */
 	/* Stage 11 — the diversion we suggested when this pair first
 	 * tripped ADVISORY. Persisted so every subsequent JSON frame can
-	 * include it, letting our GUI display "DIVERT LEFT" alongside the
-	 * banner for the whole encounter. Empty if no diversion fired
-	 * (e.g. pair doesn't include the BLE_SIM). */
+	 * include it. Empty if no diversion fired. */
 	char     diversion[12];
-	/* Stage 11 — last time we re-sent the BLE WARNING frame to Will.
-	 * We re-fire every ~8 s while WARNING-active so his buzzer (2 s
-	 * auto-clear) doesn't go silent mid-encounter. */
-	int64_t  last_warn_send_ms;
+	/* Last wall-clock we sent ANY BLE frame to Will for this pair.
+	 * Used to throttle the periodic re-fire to ~3 s so his buzzer
+	 * (2 s auto-clear) keeps re-arming for continuous beeping without
+	 * flooding the GATT write window. */
+	int64_t  last_ble_send_ms;
+	/* CRASH state lock. Once CRASH fires for a pair, we stop
+	 * re-classifying it for `crash_until_ms - now` so the level
+	 * doesn't oscillate as the missile/ghost flies past the frozen
+	 * sim (which we observed flapping CRASH→CLEAR→CRASH and ringing
+	 * the buzzer intermittently). The crash window is longer than
+	 * the GUI's 10/20 s hide window so the lock outlives both. */
+	int64_t  crash_until_ms;
 };
 static struct tracked_pair s_tracked[MAX_TRACKED];
 static int                  s_tracked_n;
@@ -83,18 +89,11 @@ static struct collision_stats s_stats;
 static struct k_spinlock      s_stats_lock;
 static struct k_work_delayable s_work;
 
-/* Stage 11 — pending diversion. When a pair transitions into WARNING we
- * fire the BLE WARNING frame immediately, then schedule the DIVERSION
- * frame to land ~300 ms later via this delayable. Sending both in the
- * same instant raced inside Will's BLE stack — the diversion's hdg_delta
- * sometimes got processed before the warning flash even started, making
- * the operator miss why the aircraft just turned. */
-static struct {
-	char                       other[AIRCRAFT_ICAO_BUF_LEN];
-	enum collision_diversion   dir;
-	bool                       valid;
-} s_pending_div;
-static struct k_work_delayable s_pending_div_work;
+/* Stage 11 — per-pair diversion direction picked at ADVISORY transition.
+ * Cached so every subsequent re-fire of the DIVERSION frame uses the
+ * same suggestion (otherwise the picker's geometry-based output would
+ * flip every tick as the threat moves, confusing the operator). */
+static enum collision_diversion s_pair_diversion[MAX_TRACKED];
 
 /* Keep-alive for `collision_inject`: re-upserts the two synthetic aircraft
  * every 3 s so they don't stale-evict (10 s threshold) and stay on the GUI
@@ -398,19 +397,6 @@ static void send_ble_diversion(const char *other_icao,
 		collision_diversion_str(d), other_icao, rc);
 }
 
-/* Stage 11 — staged-diversion handler. Fires the pending diversion BLE
- * frame ~300 ms after the WARNING so each frame gets its own clean GATT
- * round-trip on Will's mobile. */
-static void pending_div_handler(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	if (!s_pending_div.valid) {
-		return;
-	}
-	send_ble_diversion(s_pending_div.other, s_pending_div.dir);
-	s_pending_div.valid = false;
-}
-
 /* Pick a diversion direction based on relative geometry: the SIM should
  * turn AWAY from the threat. If the threat is to the right (bearing
  * positive vs SIM heading), suggest LEFT; if directly head-on with high
@@ -567,130 +553,139 @@ static void work_handler(struct k_work *work)
 				continue;
 			}
 
+			/* Look up the tracked pair early so we can honour a
+			 * CRASH lock BEFORE running the rest of the per-pair
+			 * logic. Without this lock, a missile/ghost passing
+			 * through the (frozen) sim would re-classify the pair
+			 * to WARNING/CLEAR on the very next tick, oscillating
+			 * the banner + buzzer until the GUI hide window ends. */
+			int64_t now_ms = k_uptime_get();
+			enum collision_level prev_level = COLLISION_CLEAR;
+			struct tracked_pair *tp = (tk >= 0) ? &s_tracked[tk] : NULL;
+			if (tp && tp->crash_until_ms > now_ms) {
+				/* Force this pair to stay CRASH for the locked
+				 * window — no re-classification, no further BLE
+				 * frames, no new emit_collision (the GUI's banner
+				 * + _crashed map handle the visual). Just mark
+				 * seen so the post-loop CLEAR sweep doesn't
+				 * tracked_remove() us. */
+				seen[tk] = true;
+				continue;
+			}
+
 			if (lvl == COLLISION_WARNING || lvl == COLLISION_CRASH) warn++;
 			else                                                    adv++;
 
-			enum collision_level prev_level = COLLISION_CLEAR;
-			struct tracked_pair *tp = NULL;
-			if (tk >= 0) {
+			if (tp) {
 				seen[tk] = true;
-				tp = &s_tracked[tk];
 				prev_level = tp->level;
-				/* Emit every tick while non-CLEAR. CRASH is also
-				 * emitted every tick (cheap; GUI uses it to keep
-				 * the dark-red banner visible while the icons are
-				 * hidden during the 20 s/10 s respawn window). */
-				tp->level = lvl;
+				tp->level  = lvl;
 				emit_collision(lo, hi, lvl, &app, tp->diversion);
 			} else if (s_tracked_n < MAX_TRACKED) {
 				int idx = s_tracked_n++;
 				tp = &s_tracked[idx];
 				strncpy(tp->icao_a, lo, AIRCRAFT_ICAO_BUF_LEN);
 				strncpy(tp->icao_b, hi, AIRCRAFT_ICAO_BUF_LEN);
-				tp->level = lvl;
-				tp->diversion[0]      = '\0';   /* none yet */
-				tp->last_warn_send_ms = 0;
-				seen[idx] = true;
+				tp->level             = lvl;
+				tp->diversion[0]      = '\0';
+				tp->last_ble_send_ms  = 0;
+				tp->crash_until_ms    = 0;
+				seen[idx]             = true;
 				emit_collision(lo, hi, lvl, &app, NULL);
 			}
 
-			/* Stage 11 — DIVERSION fires early, on transition INTO
-			 * ADVISORY. At high closing speeds (e.g. missile-vs-sim
-			 * ~1500 kt closure) WARNING only opens ~2-3 s before
-			 * impact, which is too late for the sim to physically
-			 * react. ADVISORY opens at min_sep<1km / tca<60s — gives
-			 * a comfortable ~30 s window for the suggestion to land
-			 * and the heading change to actually move the aircraft. */
-			if ((lvl == COLLISION_ADVISORY || lvl == COLLISION_WARNING) &&
-			    prev_level == COLLISION_CLEAR) {
-				/* Diversion: only fires if exactly one of the pair is
-				 * the BLE_SIM (so we know which side to advise). */
-				struct snap_row *sim_row = NULL;
-				struct snap_row *thr_row = NULL;
-				struct aircraft_t a_i, a_j;
-				if (aircraft_db_lookup(s_snap[i].icao, &a_i) == 0 &&
-				    a_i.source == SRC_BLE_SIM) {
-					sim_row = &s_snap[i]; thr_row = &s_snap[j];
-				} else if (aircraft_db_lookup(s_snap[j].icao, &a_j) == 0 &&
-					   a_j.source == SRC_BLE_SIM) {
-					sim_row = &s_snap[j]; thr_row = &s_snap[i];
-				}
-				if (sim_row && thr_row) {
+			/* Locate the SIM side of the pair (if any). Needed for
+			 * the diversion picker AND for routing the BLE frames
+			 * to Will. */
+			struct snap_row *sim_row = NULL;
+			struct snap_row *thr_row = NULL;
+			struct aircraft_t a_i, a_j;
+			if (aircraft_db_lookup(s_snap[i].icao, &a_i) == 0 &&
+			    a_i.source == SRC_BLE_SIM) {
+				sim_row = &s_snap[i]; thr_row = &s_snap[j];
+			} else if (aircraft_db_lookup(s_snap[j].icao, &a_j) == 0 &&
+				   a_j.source == SRC_BLE_SIM) {
+				sim_row = &s_snap[j]; thr_row = &s_snap[i];
+			}
+
+			/* On the FIRST tick the pair entered ADVISORY+, pick a
+			 * diversion based on the geometry and cache it on the
+			 * tracked-pair. We don't re-pick later — the geometry
+			 * shifts as the threat moves and we'd otherwise flip
+			 * left/right/etc each tick, confusing the operator. */
+			bool transition = (prev_level == COLLISION_CLEAR) &&
+					  (lvl != COLLISION_CLEAR);
+			if (transition && tp && sim_row && thr_row) {
+				enum collision_diversion d =
+				    pick_diversion(sim_row, thr_row);
+				strncpy(tp->diversion, collision_diversion_str(d),
+					sizeof(tp->diversion) - 1);
+				tp->diversion[sizeof(tp->diversion) - 1] = '\0';
+				if (tk >= 0)        s_pair_diversion[tk] = d;
+				else if (s_tracked_n > 0)
+					s_pair_diversion[s_tracked_n - 1] = d;
+			}
+
+			/* Unified BLE-to-Will send. Both DIVERSION and WARNING
+			 * frames fire TOGETHER (back-to-back, no stagger) on
+			 * every tick where it's been >3 s since the last send
+			 * for this pair, OR on transition. That keeps Will's
+			 * 2-s auto-clearing buzzer ringing continuously and
+			 * keeps his GUI's diversion panel paired with the
+			 * warning flash for the whole encounter. */
+			if (tp && sim_row && thr_row && lvl != COLLISION_CLEAR) {
+				bool stale_send = (now_ms - tp->last_ble_send_ms) > 3000;
+				if (transition || stale_send) {
+					/* DIVERSION carries the cached suggestion. */
+					int tk_now = find_tracked(lo, hi);
 					enum collision_diversion d =
-					    pick_diversion(sim_row, thr_row);
-					strncpy(s_pending_div.other, thr_row->icao,
-						AIRCRAFT_ICAO_BUF_LEN - 1);
-					s_pending_div.other[AIRCRAFT_ICAO_BUF_LEN - 1] = '\0';
-					s_pending_div.dir   = d;
-					s_pending_div.valid = true;
-					/* Persist the suggestion on the tracked-pair so every
-					 * subsequent JSON frame for this encounter carries
-					 * `"diversion":"LEFT"` and the GUI banner can show
-					 * what the controller advised — not just the live
-					 * separation numbers. */
-					if (tp) {
-						strncpy(tp->diversion,
-							collision_diversion_str(d),
-							sizeof(tp->diversion) - 1);
-						tp->diversion[sizeof(tp->diversion) - 1] = '\0';
+					    (tk_now >= 0) ? s_pair_diversion[tk_now]
+							  : DIVERSION_HOLD;
+					send_ble_diversion(thr_row->icao, d);
+					/* WARNING-level buzzer alert paired with the
+					 * diversion. Sent immediately after, no
+					 * stagger — Will's mobile handles both
+					 * GATT writes in well under 100 ms. */
+					if (lvl == COLLISION_WARNING ||
+					    lvl == COLLISION_CRASH) {
+						send_ble_warning(lo, hi);
 					}
-					/* No need to stage with a delay here — at ADVISORY
-					 * there's no other BLE frame competing for the
-					 * GATT write window. Fire on the next workqueue
-					 * tick (1 ms) so the diversion lands fast and Will
-					 * can start turning ASAP. */
-					k_work_reschedule(&s_pending_div_work, K_MSEC(1));
+					tp->last_ble_send_ms = now_ms;
 				}
 			}
 
-			/* Fire Will's buzzer on a fresh transition into WARNING
-			 * (CLEAR/ADVISORY -> WARNING) AND every ~8 s while
-			 * WARNING-active. Will's mobile auto-clears the buzzer
-			 * after 2 s; without periodic re-fire the operator gets
-			 * a single buzz and then silence for the rest of the
-			 * encounter. Re-firing every 8 s leaves a small gap
-			 * between buzzes so the alert reads as a clear "still
-			 * threatening" pulse rather than a continuous wail. */
-			if (lvl == COLLISION_WARNING && tp) {
-				int64_t now_ms = k_uptime_get();
-				bool transition = (prev_level != COLLISION_WARNING &&
-						   prev_level != COLLISION_CRASH);
-				bool stale      = (now_ms - tp->last_warn_send_ms) > 8000;
-				if (transition || stale) {
-					send_ble_warning(lo, hi);
-					tp->last_warn_send_ms = now_ms;
-				}
-			}
-
-			/* Stage 11 — fire the CRASH BLE frame on transition into
-			 * CRASH. Sim mobile freezes for 10 s + emits "WARN crash"
-			 * to ttyACM1 so Will's PC GUI shows the full-screen red
-			 * overlay. */
+			/* Stage 11 — CRASH transition: fire the terminal BLE
+			 * frame + lock the pair so it stops oscillating + auto-
+			 * cancel any missile or ghost in the pair so they don't
+			 * keep flying past the frozen sim. */
 			if (lvl == COLLISION_CRASH && prev_level != COLLISION_CRASH) {
-				/* The "other" ICAO is the one that ISN'T the BLE_SIM
-				 * (so Will sees the threat ID, not his own). If
-				 * neither is the SIM, just pick `lo`. */
 				const char *other = lo;
-				struct aircraft_t a_lo, a_hi;
-				if (aircraft_db_lookup(lo, &a_lo) == 0 &&
-				    a_lo.source == SRC_BLE_SIM) {
-					other = hi;
-				} else if (aircraft_db_lookup(hi, &a_hi) == 0 &&
-					   a_hi.source == SRC_BLE_SIM) {
-					other = lo;
+				if (sim_row == &s_snap[i]) {
+					other = s_snap[j].icao;
+				} else if (sim_row == &s_snap[j]) {
+					other = s_snap[i].icao;
 				}
 				send_ble_crash(other);
+				if (tp) {
+					/* Lock the pair at CRASH for 15 s — longer
+					 * than the GUI's 10/20 s hide so the lock
+					 * outlives the visual. */
+					tp->crash_until_ms = now_ms + 15000;
+				}
 				LOG_WRN("CRASH %s ↔ %s  sep=%.0fm  alt_diff=%dft",
 					lo, hi, app.min_sep_m,
 					app.alt_valid ? app.alt_diff_ft : -1);
 
-				/* If the missile is involved in this CRASH, stop it
-				 * so it doesn't keep orbiting through the impact
-				 * point. The missile's worker exits cleanly + the
-				 * m1s51l DB entry stale-evicts ~10 s later. */
+				/* Cancel either the missile OR the ghost if it's
+				 * involved — otherwise the impactor keeps moving
+				 * past the frozen sim. */
 				if (strncmp(lo, "m1s51l", AIRCRAFT_ICAO_BUF_LEN) == 0 ||
 				    strncmp(hi, "m1s51l", AIRCRAFT_ICAO_BUF_LEN) == 0) {
 					missile_cancel();
+				}
+				if (strncmp(lo, "gh05t1", AIRCRAFT_ICAO_BUF_LEN) == 0 ||
+				    strncmp(hi, "gh05t1", AIRCRAFT_ICAO_BUF_LEN) == 0) {
+					collision_ghost_stop();
 				}
 			}
 		}
@@ -727,7 +722,6 @@ int collision_init(void)
 	k_work_init_delayable(&s_work, work_handler);
 	k_work_init_delayable(&s_inject_keepalive, inject_keepalive_handler);
 	k_work_init_delayable(&s_ghost_keepalive,  ghost_keepalive_handler);
-	k_work_init_delayable(&s_pending_div_work, pending_div_handler);
 	k_work_reschedule(&s_work, K_MSEC(COLLISION_TICK_MS));
 	LOG_INF("collision detector armed @ %d ms", COLLISION_TICK_MS);
 	return 0;
