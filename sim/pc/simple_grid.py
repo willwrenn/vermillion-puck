@@ -20,7 +20,7 @@ JSON accepted as plain degrees OR degrees x1e7:
 
 import tkinter as tk
 from tkinter import scrolledtext
-import json, socket, threading, argparse, sys, re, datetime, math
+import json, socket, threading, argparse, sys, re, datetime, math, random
 from collections import deque
 import serial
 
@@ -266,6 +266,12 @@ def _clear_diversion():
     div_box.config(bg=_DIV_OFF)
     div_icao_var.set("")
     div_instr_var.set("")
+    # Phase 12 — also cancel any pending sticky-clear so we don't leak
+    # tkinter after-handles after an explicit `WARN clear`.
+    if _div_clear_job[0]:
+        try: root.after_cancel(_div_clear_job[0])
+        except Exception: pass
+        _div_clear_job[0] = None
 
 def trigger_diversion(message):
     div_icao_var.set("")
@@ -274,6 +280,19 @@ def trigger_diversion(message):
         w.config(bg=_DIV_ON,
                  fg="#ffd54f" if w.cget("font") != "Courier 8 bold" else "#ffffff")
     div_box.config(bg=_DIV_ON)
+
+# Phase 12 — sticky-clear so the orange panel stays visible while frames
+# arrive (controller re-fires every 3 s). On each call: paint the panel
+# and (re-)arm a 4.5 s clear timer. 4.5 s comfortably exceeds the 3 s
+# re-fire interval so the panel never blinks off between frames; clears
+# 4.5 s after the LAST frame for the encounter.
+_div_clear_job = [None]
+def _trigger_diversion_sticky(msg):
+    trigger_diversion(msg)
+    if _div_clear_job[0]:
+        try: root.after_cancel(_div_clear_job[0])
+        except Exception: pass
+    _div_clear_job[0] = root.after(4500, _clear_diversion)
 
 # ── Collision warning log ─────────────────────────────────────────────────────
 _warn_log = []   # [{icao, start, end|None}], newest first, max 20
@@ -326,42 +345,68 @@ def _clear_all():
     _clear_diversion()
     _log_clear_event()
 
-# ── CRASHED overlay (Stage 11) ───────────────────────────────────────────────
-# The controller sends a CRASH BLE frame to the mobile when two aircraft come
-# within 50 m horiz + 50 m vert. The mobile freezes physics for 10 s and
-# prints "WARN crash" to ttyACM0 — this overlay catches that and renders a
-# full-screen red CRASHED message for the matching 10 s, then auto-clears
-# when the mobile sends its post-reset "WARN clear" line.
-_crash_items = []   # canvas item ids that make up the overlay
+# ── LOST CONNECTION overlay (Stage 11) ───────────────────────────────────────
+# When the controller sends a CRASH BLE frame to the mobile (50 m horiz +
+# 50 m vert), the mobile freezes physics for 10 s and prints "WARN crash"
+# to ttyACM0. This overlay catches that line and renders a full-screen
+# TV-static effect with a centred "LOST CONNECTION" box for the matching
+# 10 s, then auto-clears when the mobile sends its post-reset
+# "WARN clear" line.
+#
+# The static is a grid of _PIXEL-square rectangles whose fill toggles
+# random black/white every 80 ms — much more "thematic crash" than the
+# original plain-red overlay. Ported from Will's variant in
+# resources/importedcode/Importedgui/willdeathscreen.py.
+_PIXEL       = 15          # block size for B&W static
+_crash_items = []          # all canvas items in the overlay
+_crash_px    = []          # just the pixel rects (for animation updates)
+_static_job  = [None]      # tkinter `after` handle for the animation loop
+
+def _animate_static():
+    """Re-roll the colour of every static pixel every 80 ms. Stops when
+    `_crash_items` is empty (i.e. _clear_crash ran)."""
+    if not _crash_items:
+        return
+    for item in _crash_px:
+        canvas.itemconfig(item, fill="#ffffff" if random.random() > 0.5 else "#000000")
+    _static_job[0] = root.after(80, _animate_static)
 
 def _trigger_crash():
-    global _crash_items
+    global _crash_items, _crash_px
     if _crash_items:
-        return   # already on screen
-    rect = canvas.create_rectangle(0, 0, W, H, fill="#8b0000", outline="",
-                                   tags=("crashed",))
-    txt  = canvas.create_text(W / 2, H / 2 - 30, text="CRASHED",
-                              fill="white",
-                              font=("Helvetica", 96, "bold"),
-                              tags=("crashed",))
-    sub  = canvas.create_text(W / 2, H / 2 + 60,
-                              text="aircraft destroyed — respawning in 10 s",
-                              fill="white",
-                              font=("Helvetica", 18),
-                              tags=("crashed",))
-    _crash_items = [rect, txt, sub]
-    # Belt-and-suspenders: even if the mobile fails to send "WARN clear"
-    # after its 10 s reset, auto-clear ourselves at the same horizon.
+        return
+    # Tile the canvas with static pixels.
+    px = []
+    for row in range(0, H, _PIXEL):
+        for col in range(0, W, _PIXEL):
+            color = "#ffffff" if random.random() > 0.5 else "#000000"
+            px.append(canvas.create_rectangle(
+                col, row, col + _PIXEL, row + _PIXEL, fill=color, outline=""))
+    # Centred LOST CONNECTION box on top.
+    bg  = canvas.create_rectangle(
+        W // 2 - 340, H // 2 - 55, W // 2 + 340, H // 2 + 55,
+        fill="#000000", outline="#ffffff", width=3)
+    txt = canvas.create_text(W // 2, H // 2, text="LOST CONNECTION",
+                             fill="white", font=("Courier", 50, "bold"))
+    _crash_px    = px
+    _crash_items = px + [bg, txt]
+    _animate_static()
+    # Belt-and-suspenders: auto-clear at the same 10 s horizon even if
+    # the mobile fails to send "WARN clear" after its reset.
     root.after(10000, _clear_crash)
 
 def _clear_crash():
-    global _crash_items
+    global _crash_items, _crash_px
+    if _static_job[0]:
+        root.after_cancel(_static_job[0])
+        _static_job[0] = None
     for item in _crash_items:
         try:
             canvas.delete(item)
         except Exception:
             pass
     _crash_items = []
+    _crash_px    = []
 
 # ── Dot update ────────────────────────────────────────────────────────────────
 def handle_line(text):
@@ -376,9 +421,31 @@ def handle_line(text):
         if "WARN collision" in clean:
             icao = clean.split("ICAO=")[1].split()[0] if "ICAO=" in clean else ""
             root.after(0, lambda i=icao: trigger_warning(f"ICAO {i}"))
+        elif clean.startswith("WARN diversion") or "WARN diversion" in clean:
+            # Phase 12 — controller-suggested diversion. Format from
+            # codein.c: "WARN diversion ICAO=xxxxxx hdg_delta=N alt_delta=M"
+            # Encoding mirrors send_ble_diversion() in collision.c:
+            #   ±30  hdg_delta = LEFT / RIGHT
+            #   ±100 hdg_delta = (reserved, currently unused)
+            #   +127 hdg_delta = RTB sentinel
+            #   -127 hdg_delta = HOLD sentinel (we no longer send this)
+            #   alt_delta ≠ 0  = CLIMB / DESCEND (hdg_delta = 0)
+            import re
+            hm = re.search(r"hdg_delta=(-?\d+)", clean)
+            am = re.search(r"alt_delta=(-?\d+)", clean)
+            hdg_v = int(hm.group(1)) if hm else 0
+            alt_v = int(am.group(1)) if am else 0
+            if   hdg_v == +127:   label = "RETURN TO BASE"
+            elif hdg_v == -127:   label = "HOLD PATTERN"
+            elif alt_v >  0:      label = f"CLIMB {alt_v} ft"
+            elif alt_v <  0:      label = f"DESCEND {-alt_v} ft"
+            elif hdg_v >  0:      label = f"DIVERT RIGHT {hdg_v}°"
+            elif hdg_v <  0:      label = f"DIVERT LEFT {-hdg_v}°"
+            else:                 label = "DIVERSION (no-op)"
+            root.after(0, lambda m=label: _trigger_diversion_sticky(m))
         elif "WARN msg" in clean:
             msg = clean.split("WARN msg", 1)[1].strip()
-            root.after(0, lambda m=msg: trigger_diversion(m))
+            root.after(0, lambda m=msg: _trigger_diversion_sticky(m))
         elif "WARN crash" in clean:
             # Stage 11 — full-screen red CRASHED overlay for 10 s.
             root.after(0, _trigger_crash)

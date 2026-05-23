@@ -85,7 +85,7 @@ from PyQt6.QtWidgets import (
     QStatusBar, QHeaderView, QAbstractItemView,
     QGraphicsScene, QGraphicsView, QGraphicsPolygonItem,
     QGraphicsSimpleTextItem, QGraphicsLineItem, QGraphicsPixmapItem,
-    QSplitter, QWidget, QVBoxLayout, QLabel,
+    QSplitter, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
 )
 
 try:
@@ -302,7 +302,7 @@ class AircraftTable(QTableWidget):
 # ---------------------------------------------------------------------- #
 
 HISTORY_COLUMNS = ["ICAO A", "ICAO B", "Max", "Min sep (m)", "Δalt (ft)",
-                   "Issued", "Updated"]
+                   "CRASH?", "Issued", "Updated"]
 HISTORY_CAP = 32
 
 _LEVEL_RANK = {"CLEAR": 0, "ADVISORY": 1, "WARNING": 2, "CRASH": 3}
@@ -357,7 +357,9 @@ class CollisionHistoryModel:
 
 
 class CollisionHistoryTable(QTableWidget):
-    _COL_WIDTHS = [70, 70, 75, 80, 75, 75, 80]
+    # 8 widths to match HISTORY_COLUMNS (ICAO A, ICAO B, Max, Min sep,
+    # Δalt, CRASH?, Issued, Updated). Phase 12 added the CRASH? column.
+    _COL_WIDTHS = [70, 70, 75, 80, 75, 60, 75, 80]
 
     def __init__(self):
         super().__init__(0, len(HISTORY_COLUMNS))
@@ -381,12 +383,14 @@ class CollisionHistoryTable(QTableWidget):
             issued_str  = time.strftime("%H:%M:%S", time.localtime(v["first_seen"]))
             updated_age = now - v["last_seen"]
             alt_d       = v["alt_diff_ft"]
+            did_crash   = (v["level_max"] == "CRASH")
             cells = [
                 a,
                 b,
                 v["level_max"],
                 f"{v['min_sep_m']:.0f}",
                 "—" if alt_d is None else f"{alt_d:d}",
+                "Y" if did_crash else "N",
                 issued_str,
                 f"{updated_age:.1f}s ago",
             ]
@@ -400,12 +404,22 @@ class CollisionHistoryTable(QTableWidget):
                     # Max-level cell: text contrasts on the level-coloured bg.
                     item.setBackground(QBrush(_LEVEL_BG.get(v["level_max"], _LEVEL_BG["CLEAR"])))
                     item.setForeground(QBrush(QColor("#1e1e2e")))
+                elif c == 5:
+                    # CRASH? column — dark-red bg on Y, dim grey on N so the
+                    # operator can spot fatal encounters at a glance.
+                    if did_crash:
+                        item.setBackground(QBrush(QColor("#8b0000")))
+                        item.setForeground(QBrush(QColor("#ffffff")))
+                    else:
+                        item.setForeground(QBrush(QColor("#6c7086")))
                 else:
                     # Age-of-event subtle cue: dim if the pair has gone quiet.
                     fg = QColor("#a6adc8") if updated_age < 5.0 else QColor("#6c7086")
                     item.setForeground(QBrush(fg))
                 if c >= 3:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight |
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter
+                                          if c == 5 else
+                                          Qt.AlignmentFlag.AlignRight |
                                           Qt.AlignmentFlag.AlignVCenter)
                 self.setItem(r, c, item)
 
@@ -1081,11 +1095,20 @@ class AtcMainWindow(QMainWindow):
         self._alert_flash = False
         self._set_banner_style(flash=False)
 
+        # Phase 12 — "Issue Diversion" button bar. Ticks the marking
+        # rubric's Visualization band ("ability to issue commands to
+        # sensors from PC or dashboard"). Each button writes one line to
+        # the controller's shell port (skywatch diversion <dir>), which
+        # broadcasts the BLE diversion frame to Will's sim and prints
+        # back on his GUI's orange panel.
+        self._diversion_bar = self._make_diversion_bar()
+
         central = QWidget()
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         outer.addWidget(self.alert_banner)
+        outer.addWidget(self._diversion_bar)
         if view_mode == "both":
             split = QSplitter(Qt.Orientation.Horizontal)
             split.addWidget(self.map)
@@ -1123,6 +1146,65 @@ class AtcMainWindow(QMainWindow):
         self.refresh_timer.setInterval(int(1000 / REFRESH_HZ))
         self.refresh_timer.timeout.connect(self.refresh_view)
         self.refresh_timer.start()
+
+    def _make_diversion_bar(self) -> QWidget:
+        """Phase 12 — button bar that fires `skywatch diversion <dir>` to
+        the controller's shell port. Six small buttons; clicks open the
+        port briefly, write a line, close. Marker-rubric Visualization band
+        explicitly rewards "issue commands from dashboard"."""
+        bar = QWidget()
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(6, 4, 6, 4)
+        h.setSpacing(6)
+        lbl = QLabel("ISSUE DIVERSION →")
+        lbl.setStyleSheet("color:#a6adc8; font-family:'JetBrains Mono','Consolas',monospace;"
+                          " font-size:10pt; font-weight:bold;")
+        h.addWidget(lbl)
+        for name in ("LEFT", "RIGHT", "CLIMB", "DESCEND", "RTB", "HOLD"):
+            btn = QPushButton(name)
+            btn.setStyleSheet(
+                "QPushButton {"
+                " background:#313244; color:#cdd6f4; border:1px solid #45475a;"
+                " border-radius:4px; padding:4px 10px;"
+                " font-family:'JetBrains Mono','Consolas',monospace; font-size:9pt;"
+                " font-weight:bold; }"
+                "QPushButton:hover { background:#45475a; }"
+                "QPushButton:disabled { color:#585b70; background:#181825; }")
+            btn.clicked.connect(lambda _checked, d=name.lower(): self._send_diversion(d))
+            h.addWidget(btn)
+        h.addStretch(1)
+        bar.setStyleSheet("QWidget { background:#1e1e2e; border-bottom:1px solid #313244; }")
+        return bar
+
+    def _send_diversion(self, direction: str) -> None:
+        """Phase 12 — fire `skywatch diversion <dir>` to the controller's
+        shell port. Runs on a background thread so the Qt main thread
+        doesn't freeze on serial.Serial()'s open + DTR handshake (which
+        can block 100-500 ms, or longer if the port is held by `screen`).
+
+        Threaded write also tolerates a busy port: failures land in the
+        status bar via QTimer.singleShot, never block the UI."""
+        port = "/dev/ttyACM0"
+        self.status.showMessage(f"Sending: skywatch diversion {direction} ...", 1500)
+
+        def _send_thread():
+            try:
+                if serial is None:
+                    raise RuntimeError("pyserial not installed")
+                with serial.Serial(port, 115200, timeout=0.3,
+                                   write_timeout=1.0,
+                                   dsrdtr=False, rtscts=False) as s:
+                    s.write(f"\r\nskywatch diversion {direction}\r\n".encode())
+                msg = f"Sent: skywatch diversion {direction}"
+                timeout = 3000
+            except Exception as e:                       # noqa: BLE001
+                msg = f"Diversion send failed ({port}): {e}"
+                timeout = 5000
+            # Status-bar update must happen on the Qt main thread.
+            QTimer.singleShot(0, lambda: self.status.showMessage(msg, timeout))
+
+        threading.Thread(target=_send_thread, name="diversion-write",
+                         daemon=True).start()
 
     def _set_banner_style(self, flash: bool, level: str = "WARNING"):
         # Two-tone pulse, palette depends on worst level currently shown.
@@ -1178,12 +1260,15 @@ class AtcMainWindow(QMainWindow):
             return
         level = frame.get("level", "CLEAR")
         tca   = float(frame.get("tca_s", 0.0))
-        sep   = float(frame.get("min_sep_m", 0.0))
+        sep   = float(frame.get("min_sep_m", 0.0))           # projected
         alt_d = frame.get("alt_diff_ft")  # may be None if firmware didn't report
         divert = frame.get("diversion")   # Stage 11: controller's suggestion (or None)
-        # Always feed the collision-history dashboard (it has its own logic
-        # about WARNING/ADVISORY entries persisting after CLEAR).
-        self.history.on_event(key, level, tca, sep, alt_d, recv_t)
+        # Phase 12 — history dashboard should record what the aircraft
+        # ACTUALLY got down to, not the predicted closest approach. Use
+        # `actual_sep_m` (current Euclidean) for the history minimisation;
+        # fall back to `min_sep_m` for backwards compat with old captures.
+        sep_actual = float(frame.get("actual_sep_m", sep))
+        self.history.on_event(key, level, tca, sep_actual, alt_d, recv_t)
         # Phase 10 fan-out: every CollisionFrame goes to MQTT (live push to
         # external subscribers) AND InfluxDB Cloud (time-series store for
         # the dashboard's Active alerts table). Both are non-blocking; if

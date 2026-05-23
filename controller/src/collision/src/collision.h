@@ -42,7 +42,15 @@
  * separation minimum below FL290. */
 #define COLLISION_VERTICAL_SEP_FT  1000
 
-#define COLLISION_TICK_MS          1000   /* 1 Hz */
+/* 200 ms = 5 Hz. Fast enough that a 750 kt missile (~386 m/s) can't pass
+ * through the 100 m CRASH zone between ticks (it covers ~77 m per tick at
+ * that speed, vs the old 386 m per 1-Hz tick which missed the close
+ * moment entirely). NOTE: `s_stats.advisory_count / warning_count /
+ * pairs_checked / ticks` are now incremented 5x as often per real second —
+ * raw values look bigger on `skywatch collision stats`, but rates per
+ * second are unchanged. BLE re-fire stays gated by `last_ble_send_ms` in
+ * wall-clock ms so the buzzer cadence doesn't change. */
+#define COLLISION_TICK_MS          200    /* 5 Hz */
 
 enum collision_level {
 	COLLISION_CLEAR    = 0,

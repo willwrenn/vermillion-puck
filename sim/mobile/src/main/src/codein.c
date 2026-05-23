@@ -44,7 +44,7 @@ static int32_t  g_lon      =  1530137000; // 153.0137
 static uint16_t g_alt      = 100;
 static uint16_t g_speed    = 0;
 static uint16_t g_heading  = 0;
-static uint8_t  g_icao[3]  = {0xFA, 0x99, 0x07};
+static uint8_t  g_icao[3]  = {0xDA, 0x77, 0x05};
 static volatile bool g_warning_active;   // set by warning GATT write, cleared on reset
 static float    g_turn_rate = 0.0f;      // degrees per 200ms tick; 0 = straight
 static float    g_hdg_acc   = 0.0f;      // fractional heading accumulator for smooth circles
@@ -167,19 +167,25 @@ static ssize_t warn_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 		printk("WARN collision ICAO=%02x%02x%02x sev=%u\n",
 		       w->icao[0], w->icao[1], w->icao[2], w->severity);
 		g_warning_active = true;
-		k_work_reschedule(&warning_clear_work, K_SECONDS(2));
+		/* 5 s clear (was 2 s) — paired with the controller's 3 s re-fire
+		 * cadence so the buzzer + red LED stay continuously on through
+		 * the encounter instead of beeping 2 s on / 1 s off. */
+		k_work_reschedule(&warning_clear_work, K_SECONDS(5));
 		break;
-	case 0x03: // diversion suggestion (hdg_delta)
+	case 0x03: // diversion suggestion (hdg_delta + alt_delta)
 		/* Suggestion only — print to ttyACM0 so the PC GUI shows the
 		 * orange DIVERSION panel, set the warning flag for the LED/
 		 * buzzer alert, but do NOT change heading. The human pilot
 		 * (Will using wasd) decides whether to act on the suggestion.
-		 * Matches the real-ATC mental model: controller advises,
-		 * pilot executes. */
-		printk("WARN diversion ICAO=%02x%02x%02x hdg_delta=%d\n",
-		       w->icao[0], w->icao[1], w->icao[2], w->hdg_delta);
+		 *
+		 * Print BOTH hdg_delta AND alt (signed) so the GUI can
+		 * distinguish CLIMB / DESCEND (encoded via the `alt` field,
+		 * hdg_delta=0) from LEFT / RIGHT (hdg_delta=±30, alt=0). */
+		printk("WARN diversion ICAO=%02x%02x%02x hdg_delta=%d alt_delta=%d\n",
+		       w->icao[0], w->icao[1], w->icao[2],
+		       w->hdg_delta, (int16_t)w->alt);
 		g_warning_active = true;
-		k_work_reschedule(&warning_clear_work, K_SECONDS(2));
+		k_work_reschedule(&warning_clear_work, K_SECONDS(5));
 		break;
 	case 0x05: // Stage 11 — CRASH: freeze 10 s then reset to St Lucia.
 		printk("WARN crash\n");   // Will's GUI shows full-screen overlay

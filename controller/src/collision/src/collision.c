@@ -204,10 +204,11 @@ static bool snap_cb(const struct aircraft_db_entry *e, void *user)
 
 struct approach {
 	double  tca_s;
-	double  min_sep_m;
+	double  min_sep_m;       /* PROJECTED at closest approach (or current if past) */
+	double  cur_sep_m;       /* CURRENT Euclidean distance now — Phase 12 */
 	bool    diverging;
 	/* Vertical separation between the pair, in feet. Only meaningful when
-	 * `alt_valid` is set (both aircraft reported altitude). */
+	 * `alt_valid` is set (both aircraft reported altitude). Always current. */
 	int32_t alt_diff_ft;
 	bool    alt_valid;
 };
@@ -225,7 +226,7 @@ static struct approach closest_approach(const struct snap_row *a,
 	double cur_sep = sqrt(drx * drx + dry * dry);
 
 	struct approach r = { .tca_s = INFINITY, .min_sep_m = cur_sep,
-			      .diverging = false,
+			      .cur_sep_m = cur_sep, .diverging = false,
 			      .alt_diff_ft = 0, .alt_valid = false };
 
 	/* Populate altitude pair-info if both snaps reported it. The vertical
@@ -426,13 +427,18 @@ static enum collision_diversion pick_diversion(
 	}
 
 	/* Near head-on (rel ~ 180°): the threat is ahead but coming at us;
-	 * a turn alone won't help much — recommend RTB to break the geometry. */
-	if (fabs(rel) > 160.0) return DIVERSION_RTB;
+	 * a turn alone won't help much — recommend CLIMB. Vertical separation
+	 * breaks head-on geometry instantly; RTB (the old fallback) keeps
+	 * closing because the SIM is still inside the threat's velocity cone. */
+	if (fabs(rel) > 160.0) return DIVERSION_CLIMB;
 
 	/* Otherwise: threat is to one side → turn the OTHER way. */
 	if (rel > 0.0)  return DIVERSION_LEFT;     /* threat on right → bank left */
 	if (rel < 0.0)  return DIVERSION_RIGHT;
-	return DIVERSION_HOLD;
+	/* Defensive fallback (only fires on exact float `rel == 0.0`, which
+	 * effectively never happens): CLIMB rather than HOLD. HOLD = enter a
+	 * circling pattern, which doesn't break any geometry. */
+	return DIVERSION_CLIMB;
 }
 
 static void emit_collision(const char *lo, const char *hi,
@@ -440,11 +446,20 @@ static void emit_collision(const char *lo, const char *hi,
 			   const struct approach *a,
 			   const char *diversion)
 {
-	char buf[256];
+	char buf[320];
 	/* Optional fields built into small inline scratch strings so the main
-	 * snprintf stays readable. Empty string = field omitted. */
+	 * snprintf stays readable. Empty string = field omitted.
+	 *
+	 * Phase 12 — emit `actual_sep_m` (current Euclidean distance NOW)
+	 * separately from `min_sep_m` (projected closest approach when
+	 * converging; equal to current when diverging). The history dashboard
+	 * minimises over actual_sep_m to record the closest the aircraft
+	 * truly got, not the closest they were predicted to get. */
 	char alt_field[40] = "";
 	char div_field[40] = "";
+	char act_field[40];
+	snprintf(act_field, sizeof(act_field),
+		 ",\"actual_sep_m\":%.0f", a->cur_sep_m);
 	if (a->alt_valid) {
 		snprintf(alt_field, sizeof(alt_field),
 			 ",\"alt_diff_ft\":%d", a->alt_diff_ft);
@@ -457,11 +472,12 @@ static void emit_collision(const char *lo, const char *hi,
 	int n = snprintf(buf, sizeof(buf),
 		"{\"type\":\"collision\",\"icao_a\":\"%s\",\"icao_b\":\"%s\","
 		"\"level\":\"%s\",\"tca_s\":%.1f,\"min_sep_m\":%.0f"
-		"%s%s,\"ts\":%.3f}",
+		"%s%s%s,\"ts\":%.3f}",
 		lo, hi,
 		collision_level_str(lvl),
 		isfinite(a->tca_s) ? a->tca_s : 0.0,
 		a->min_sep_m,
+		act_field,
 		alt_field,
 		div_field,
 		(double)k_uptime_get() / 1000.0);
@@ -518,13 +534,24 @@ static void work_handler(struct k_work *work)
 				}
 			}
 
-			/* Stage 11 — CRASH upgrade. CRASH is only declared when
-			 * the two aircraft are CURRENTLY within the tight crash
-			 * thresholds — NOT when their projected closest approach
-			 * is. Without this, a pair on a guaranteed-collision
-			 * course flagged CRASH the moment closest_approach()'s
-			 * projected min_sep dropped under 50 m, even though they
-			 * were 15 s away from actually impacting. */
+			/* Stage 11 — CRASH upgrade. Two ways to declare CRASH:
+			 *   (a) CURRENT distance is inside the 100 m / 100 m zone
+			 *       — the normal case for slow aircraft (ghosts at
+			 *       250 kt, sim at 60 kt, etc.).
+			 *   (b) IMMINENT — projected closest approach is inside the
+			 *       crash zone AND about to happen (<0.5 s) AND we're
+			 *       already physically close (<300 m). Catches fast
+			 *       missiles whose 0.5 s pass through the crash zone
+			 *       lands BETWEEN ticks even at our new 5 Hz cadence.
+			 *       The 300 m guard prevents predictive false-positives
+			 *       for things still far away on a future collision
+			 *       course.
+			 *
+			 * Phase 12 — without (b), a 750 kt missile in head-on
+			 * geometry against a 60 kt sim has ~810 kt closure
+			 * (~417 m/s), passing through the 100 m zone in <0.25 s.
+			 * Even at 5 Hz tick (200 ms apart), we'd reliably catch
+			 * it via (b) but might miss (a). Belt + suspenders. */
 			if (lvl == COLLISION_WARNING) {
 				double dn_m = (s_snap[j].lat - s_snap[i].lat) / DEG_PER_M_LAT;
 				double de_m = (s_snap[j].lon - s_snap[i].lon)
@@ -538,7 +565,12 @@ static void work_handler(struct k_work *work)
 				}
 				bool vert_ok = !have_vert ||
 					(current_vert_ft < COLLISION_CRASH_VERT_FT);
-				if (current_horiz_m < COLLISION_CRASH_SEP_M && vert_ok) {
+				bool current_hit  = (current_horiz_m < COLLISION_CRASH_SEP_M);
+				bool imminent_hit = (app.min_sep_m < COLLISION_CRASH_SEP_M &&
+						     fabs(app.tca_s) < 0.5 &&
+						     !app.diverging &&
+						     current_horiz_m < 300.0);
+				if ((current_hit || imminent_hit) && vert_ok) {
 					lvl = COLLISION_CRASH;
 				}
 			}
@@ -739,27 +771,59 @@ void collision_get_stats(struct collision_stats *out)
  * Geometry: head-on east/west, 6 km apart (off-CBD but both visible),
  * 250 kt each → closing speed ~257 m/s → TCA ≈ 23 s, min_sep ≈ 0 →
  * classifies as WARNING (<500 m, <30 s) rather than ADVISORY. */
-static void build_inject_pair(struct aircraft_t *a, struct aircraft_t *b)
-{
-	memset(a, 0, sizeof(*a));
-	strncpy(a->icao, "c011a1", AIRCRAFT_ICAO_BUF_LEN - 1);
-	a->lat = -27.55;            /* same lat, head-on */
-	a->lon = 152.97;            /* ~3 km west of -27.55,153.00 */
-	a->source = SRC_FICT;
-	a->valid_mask = AIRCRAFT_VALID_VEL | AIRCRAFT_VALID_HDG;
-	a->vel_kt = 250.0;
-	a->hdg_deg = 90.0;          /* east */
-	a->ts = (double)k_uptime_get() / 1000.0;
+/* Phase 12 — inject state: persistent positions that DEAD-RECKON between
+ * keep-alive ticks instead of teleporting back to the starting points.
+ * Previously `build_inject_pair` reset lat/lon to fixed values every
+ * 3 s, so c011a1/c011b2 never actually converged — they got stuck at
+ * ~6 km apart and the operator saw no collision. */
+#define INJECT_SPEED_KT      250.0
+#define INJECT_TICK_MS       1000   /* upsert at 1 Hz so the GUI sees motion */
 
-	memset(b, 0, sizeof(*b));
-	strncpy(b->icao, "c011b2", AIRCRAFT_ICAO_BUF_LEN - 1);
-	b->lat = -27.55;
-	b->lon = 153.03;            /* ~3 km east of -27.55,153.00 */
-	b->source = SRC_FICT;
-	b->valid_mask = AIRCRAFT_VALID_VEL | AIRCRAFT_VALID_HDG;
-	b->vel_kt = 250.0;
-	b->hdg_deg = 270.0;         /* west */
-	b->ts = a->ts;
+static double s_inj_a_lat, s_inj_a_lon;
+static double s_inj_b_lat, s_inj_b_lon;
+static int64_t s_inj_last_step_ms;
+
+static void inject_reset_state(void)
+{
+	/* Starting geometry: head-on east/west, ~6 km apart at -27.55. With
+	 * both flying at 250 kt the closing speed is ~257 m/s so they reach
+	 * minimum-separation in ~23 s — long enough for the GUI to walk
+	 * through CLEAR → ADVISORY → WARNING → CRASH naturally. */
+	s_inj_a_lat = -27.55; s_inj_a_lon = 152.97;
+	s_inj_b_lat = -27.55; s_inj_b_lon = 153.03;
+	s_inj_last_step_ms = k_uptime_get();
+}
+
+static void inject_step_and_upsert(double dt)
+{
+	/* a flies east @ 250 kt → +Δlon. b flies west → -Δlon. */
+	const double speed_mps = INJECT_SPEED_KT * KT_TO_MPS;
+	const double dlon_a    = (speed_mps * dt) * deg_per_m_lon_at(s_inj_a_lat);
+	const double dlon_b    = (speed_mps * dt) * deg_per_m_lon_at(s_inj_b_lat);
+	s_inj_a_lon += dlon_a;
+	s_inj_b_lon -= dlon_b;
+
+	struct aircraft_t a = {0};
+	strncpy(a.icao, "c011a1", AIRCRAFT_ICAO_BUF_LEN - 1);
+	a.source     = SRC_FICT;
+	a.lat        = s_inj_a_lat;
+	a.lon        = s_inj_a_lon;
+	a.ts         = (double)k_uptime_get() / 1000.0;
+	a.valid_mask = AIRCRAFT_VALID_VEL | AIRCRAFT_VALID_HDG;
+	a.vel_kt     = INJECT_SPEED_KT;
+	a.hdg_deg    = 90.0;     /* east */
+	aircraft_db_upsert(&a);
+
+	struct aircraft_t b = {0};
+	strncpy(b.icao, "c011b2", AIRCRAFT_ICAO_BUF_LEN - 1);
+	b.source     = SRC_FICT;
+	b.lat        = s_inj_b_lat;
+	b.lon        = s_inj_b_lon;
+	b.ts         = a.ts;
+	b.valid_mask = AIRCRAFT_VALID_VEL | AIRCRAFT_VALID_HDG;
+	b.vel_kt     = INJECT_SPEED_KT;
+	b.hdg_deg    = 270.0;    /* west */
+	aircraft_db_upsert(&b);
 }
 
 static void inject_keepalive_handler(struct k_work *work)
@@ -769,31 +833,26 @@ static void inject_keepalive_handler(struct k_work *work)
 		LOG_INF("inject keep-alive stopped; c011a1/c011b2 will stale-evict in ~10 s");
 		return;
 	}
-	struct aircraft_t a, b;
-	build_inject_pair(&a, &b);
-	aircraft_db_upsert(&a);
-	aircraft_db_upsert(&b);
-	LOG_DBG("inject keep-alive re-upserted c011a1 + c011b2");
-	k_work_reschedule(&s_inject_keepalive, K_MSEC(3000));
+	int64_t now = k_uptime_get();
+	double dt = (now - s_inj_last_step_ms) / 1000.0;
+	if (dt < 0.0 || dt > 30.0) dt = (double)INJECT_TICK_MS / 1000.0;
+	s_inj_last_step_ms = now;
+	inject_step_and_upsert(dt);
+	k_work_reschedule(&s_inject_keepalive, K_MSEC(INJECT_TICK_MS));
 }
 
 int collision_inject_scenario(void)
 {
-	struct aircraft_t a, b;
-	build_inject_pair(&a, &b);
-	int ra = aircraft_db_upsert(&a);
-	int rb = aircraft_db_upsert(&b);
-	if (ra < 0 || rb < 0) return -EIO;
+	inject_reset_state();
+	/* First upsert at t=0 with zero delta so the aircraft appear at the
+	 * starting geometry, then the keepalive dead-reckons forward. */
+	inject_step_and_upsert(0.0);
 
-	/* Run the keep-alive indefinitely until `collision_inject_stop()`.
-	 * Idempotent: re-firing `inject` just refreshes positions and
-	 * (re)arms the worker — no double-schedule because k_work_reschedule
-	 * cancels any pending instance first. */
 	s_inject_active = true;
-	k_work_reschedule(&s_inject_keepalive, K_MSEC(3000));
+	k_work_reschedule(&s_inject_keepalive, K_MSEC(INJECT_TICK_MS));
 
-	LOG_INF("INJECT c011a1 (FICT, %.4f, %.4f, hdg %.0f) + c011b2 (FICT, %.4f, %.4f, hdg %.0f) — keep-alive until `collision stop`",
-		a.lat, a.lon, a.hdg_deg, b.lat, b.lon, b.hdg_deg);
+	LOG_INF("INJECT c011a1 (FICT, %.4f, %.4f, hdg 90) + c011b2 (FICT, %.4f, %.4f, hdg 270) — converging @ 250 kt each",
+		s_inj_a_lat, s_inj_a_lon, s_inj_b_lat, s_inj_b_lon);
 	return 0;
 }
 
