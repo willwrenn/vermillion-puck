@@ -85,7 +85,7 @@ from PyQt6.QtWidgets import (
     QStatusBar, QHeaderView, QAbstractItemView,
     QGraphicsScene, QGraphicsView, QGraphicsPolygonItem,
     QGraphicsSimpleTextItem, QGraphicsLineItem, QGraphicsPixmapItem,
-    QSplitter, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QSplitter, QWidget, QVBoxLayout, QLabel,
 )
 
 try:
@@ -1095,20 +1095,11 @@ class AtcMainWindow(QMainWindow):
         self._alert_flash = False
         self._set_banner_style(flash=False)
 
-        # Phase 12 — "Issue Diversion" button bar. Ticks the marking
-        # rubric's Visualization band ("ability to issue commands to
-        # sensors from PC or dashboard"). Each button writes one line to
-        # the controller's shell port (skywatch diversion <dir>), which
-        # broadcasts the BLE diversion frame to Will's sim and prints
-        # back on his GUI's orange panel.
-        self._diversion_bar = self._make_diversion_bar()
-
         central = QWidget()
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         outer.addWidget(self.alert_banner)
-        outer.addWidget(self._diversion_bar)
         if view_mode == "both":
             split = QSplitter(Qt.Orientation.Horizontal)
             split.addWidget(self.map)
@@ -1146,65 +1137,6 @@ class AtcMainWindow(QMainWindow):
         self.refresh_timer.setInterval(int(1000 / REFRESH_HZ))
         self.refresh_timer.timeout.connect(self.refresh_view)
         self.refresh_timer.start()
-
-    def _make_diversion_bar(self) -> QWidget:
-        """Phase 12 — button bar that fires `skywatch diversion <dir>` to
-        the controller's shell port. Six small buttons; clicks open the
-        port briefly, write a line, close. Marker-rubric Visualization band
-        explicitly rewards "issue commands from dashboard"."""
-        bar = QWidget()
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(6, 4, 6, 4)
-        h.setSpacing(6)
-        lbl = QLabel("ISSUE DIVERSION →")
-        lbl.setStyleSheet("color:#a6adc8; font-family:'JetBrains Mono','Consolas',monospace;"
-                          " font-size:10pt; font-weight:bold;")
-        h.addWidget(lbl)
-        for name in ("LEFT", "RIGHT", "CLIMB", "DESCEND", "RTB", "HOLD"):
-            btn = QPushButton(name)
-            btn.setStyleSheet(
-                "QPushButton {"
-                " background:#313244; color:#cdd6f4; border:1px solid #45475a;"
-                " border-radius:4px; padding:4px 10px;"
-                " font-family:'JetBrains Mono','Consolas',monospace; font-size:9pt;"
-                " font-weight:bold; }"
-                "QPushButton:hover { background:#45475a; }"
-                "QPushButton:disabled { color:#585b70; background:#181825; }")
-            btn.clicked.connect(lambda _checked, d=name.lower(): self._send_diversion(d))
-            h.addWidget(btn)
-        h.addStretch(1)
-        bar.setStyleSheet("QWidget { background:#1e1e2e; border-bottom:1px solid #313244; }")
-        return bar
-
-    def _send_diversion(self, direction: str) -> None:
-        """Phase 12 — fire `skywatch diversion <dir>` to the controller's
-        shell port. Runs on a background thread so the Qt main thread
-        doesn't freeze on serial.Serial()'s open + DTR handshake (which
-        can block 100-500 ms, or longer if the port is held by `screen`).
-
-        Threaded write also tolerates a busy port: failures land in the
-        status bar via QTimer.singleShot, never block the UI."""
-        port = "/dev/ttyACM0"
-        self.status.showMessage(f"Sending: skywatch diversion {direction} ...", 1500)
-
-        def _send_thread():
-            try:
-                if serial is None:
-                    raise RuntimeError("pyserial not installed")
-                with serial.Serial(port, 115200, timeout=0.3,
-                                   write_timeout=1.0,
-                                   dsrdtr=False, rtscts=False) as s:
-                    s.write(f"\r\nskywatch diversion {direction}\r\n".encode())
-                msg = f"Sent: skywatch diversion {direction}"
-                timeout = 3000
-            except Exception as e:                       # noqa: BLE001
-                msg = f"Diversion send failed ({port}): {e}"
-                timeout = 5000
-            # Status-bar update must happen on the Qt main thread.
-            QTimer.singleShot(0, lambda: self.status.showMessage(msg, timeout))
-
-        threading.Thread(target=_send_thread, name="diversion-write",
-                         daemon=True).start()
 
     def _set_banner_style(self, flash: bool, level: str = "WARNING"):
         # Two-tone pulse, palette depends on worst level currently shown.
