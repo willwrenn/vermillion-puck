@@ -61,7 +61,7 @@ static volatile int64_t g_frozen_until_ms = 0;
 #define LON_MIN  1525000000 // 152.5 (west)
 #define LON_MAX  1535000000 // 153.5 (east)
 #define ALT_MIN  0
-#define ALT_MAX  5000       // metres
+#define ALT_MAX  15000      // metres
 
 // Warning frame — base to mobile (collision warnings / diversion suggestions)
 struct __packed warning_frame {
@@ -316,10 +316,10 @@ static void process_gui_cmd(uint8_t c)
 		g_lat = -274975000;
 		g_lon = 1530137000;
 		g_alt = 100;
-		g_speed          = 0;
-		g_heading        = 0;
-		g_turn_rate      = 0.0f;
-		g_hdg_acc        = 0.0f;
+		g_speed = 0;
+		g_heading = 0;
+		g_turn_rate = 0.0f;
+		g_hdg_acc = 0.0f;
 		g_warning_active = false;
 		k_work_cancel_delayable(&warning_clear_work);
 		break;
@@ -345,10 +345,10 @@ static int cmd_aircraft_set(const struct shell *sh, size_t argc, char **argv)
 		shell_print(sh, "Usage: aircraft set <lat> <lon> <alt> <speed> <heading>");
 		return -EINVAL;
 	}
-	g_lat     = (int32_t)atoi(argv[1]);
-	g_lon     = (int32_t)atoi(argv[2]);
-	g_alt     = (uint16_t)atoi(argv[3]);
-	g_speed   = (uint16_t)atoi(argv[4]);
+	g_lat = (int32_t)atoi(argv[1]);
+	g_lon = (int32_t)atoi(argv[2]);
+	g_alt = (uint16_t)atoi(argv[3]);
+	g_speed = (uint16_t)atoi(argv[4]);
 	g_heading = (uint16_t)atoi(argv[5]);
 	send_position_json();
 	return 0;
@@ -595,6 +595,15 @@ static void send_thread_fn(void *a, void *b, void *c)
 			g_lat += (int32_t)(dlat * 1e7f);
 			g_lon += (int32_t)(dlon * 1e7f);
 			clamp_position(); // keep within Brisbane bounds
+
+			// Ground impact — altitude clamped to 0 while moving
+			if (g_alt == 0 && g_speed > 0) {
+				printk("WARN crash\n");
+				g_frozen_until_ms = k_uptime_get() + 10000;
+				g_warning_active = true;
+				k_work_cancel_delayable(&warning_clear_work);
+				k_work_reschedule(&crash_reset_work, K_MSEC(10000));
+			}
 		}
 
 		// Flash red LED while base warning is active; keep red off when connected and clear
