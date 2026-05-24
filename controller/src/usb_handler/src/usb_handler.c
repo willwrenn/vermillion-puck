@@ -36,10 +36,10 @@ LOG_MODULE_REGISTER(usb_handler, LOG_LEVEL_INF);
 #define RINGBUF_BYTES       2048
 #define LINE_BUF_BYTES      512
 
-/* 4096 because each parsed JSON aircraft frame triggers IMM EKF math
- * (Phase 9) inside aircraft_db_upsert — see bridge.c for the same
- * reasoning. The original 2048 B stack overflowed once the ADS-B
- * bridge started feeding real traffic. */
+/* 4096 B (was 2048) — every parsed JSON aircraft frame triggers
+ * aircraft_db_upsert() which runs Kalman matrix math. See bridge.c
+ * for the same reasoning. The original 2048 B stack overflowed once
+ * the ADS-B bridge started feeding real traffic. */
 #define RX_THREAD_STACK     4096
 #define RX_THREAD_PRIO      7
 

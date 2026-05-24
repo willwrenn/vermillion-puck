@@ -616,8 +616,12 @@ static void work_handler(struct k_work *work)
 			} else if (s_tracked_n < MAX_TRACKED) {
 				int idx = s_tracked_n++;
 				tp = &s_tracked[idx];
-				strncpy(tp->icao_a, lo, AIRCRAFT_ICAO_BUF_LEN);
-				strncpy(tp->icao_b, hi, AIRCRAFT_ICAO_BUF_LEN);
+				/* Always copy at most BUF_LEN-1 + manually NUL-terminate
+				 * so a 7-char ICAO can't leave the field unterminated. */
+				strncpy(tp->icao_a, lo, AIRCRAFT_ICAO_BUF_LEN - 1);
+				tp->icao_a[AIRCRAFT_ICAO_BUF_LEN - 1] = '\0';
+				strncpy(tp->icao_b, hi, AIRCRAFT_ICAO_BUF_LEN - 1);
+				tp->icao_b[AIRCRAFT_ICAO_BUF_LEN - 1] = '\0';
 				tp->level             = lvl;
 				tp->diversion[0]      = '\0';
 				tp->last_ble_send_ms  = 0;
@@ -927,7 +931,12 @@ static void ghost_keepalive_handler(struct k_work *work)
 	k_work_reschedule(&s_ghost_keepalive, K_MSEC(GHOST_TICK_MS));
 }
 
-int collision_ghost_start(double tca_s, double miss_m, int alt_ft)
+/* Phase 12 — shared ghost-start body. The two public entry points
+ * (`collision_ghost_start` and `collision_ghost_start_at`) pre-populate
+ * the target aircraft and then funnel through this. Avoids cut-and-paste
+ * + keeps the re-entry teardown + geometry math in one place. */
+static int ghost_start_internal(const struct aircraft_t *target,
+				double tca_s, double miss_m, int alt_ft)
 {
 	/* If a ghost is already running, tear down its state so the new spawn
 	 * registers as a clean transition (and re-fires Will's BLE warning if
@@ -953,29 +962,20 @@ int collision_ghost_start(double tca_s, double miss_m, int alt_ft)
 		}
 	}
 
-	/* 1. Snapshot Will's aircraft from the DB. */
-	struct aircraft_t target = {0};
-	struct find_ctx ctx = { .out = &target, .found = false };
-	aircraft_db_for_each(find_ble_sim_cb, &ctx);
-	if (!ctx.found) {
-		LOG_WRN("ghost_start: no BLE_SIM aircraft in DB yet");
-		return -ENOENT;
-	}
-
 	/* Defaults if caller passed sentinel values. */
 	if (tca_s  <= 0.0) tca_s  = GHOST_TCA_TARGET_S;
 	if (miss_m <  0.0) miss_m = 0.0;
 	if (alt_ft <  0) {
 		/* Match Will's current altitude so the test fires WARNING out of
 		 * the box. Vertical-sep gate kicks in only if Will diverts. */
-		alt_ft = (target.valid_mask & AIRCRAFT_VALID_ALT)
-			 ? target.alt_ft : 5000;
+		alt_ft = (target->valid_mask & AIRCRAFT_VALID_ALT)
+			 ? target->alt_ft : 5000;
 	}
 	s_ghost_alt_ft = alt_ft;
 
 	/* 2. Head-on heading. */
-	double target_hdg = (target.valid_mask & AIRCRAFT_VALID_HDG)
-			    ? target.hdg_deg : 0.0;
+	double target_hdg = (target->valid_mask & AIRCRAFT_VALID_HDG)
+			    ? target->hdg_deg : 0.0;
 	s_ghost_hdg_deg = fmod(target_hdg + 180.0, 360.0);
 
 	/* 3. Velocity components from heading + speed (m/s). */
@@ -1000,8 +1000,8 @@ int collision_ghost_start(double tca_s, double miss_m, int alt_ft)
 
 	double dn = range_m * along_dn + miss_m * perp_dn;
 	double de = range_m * along_de + miss_m * perp_de;
-	s_ghost_lat = target.lat + dn * DEG_PER_M_LAT;
-	s_ghost_lon = target.lon + de * deg_per_m_lon_at(target.lat);
+	s_ghost_lat = target->lat + dn * DEG_PER_M_LAT;
+	s_ghost_lon = target->lon + de * deg_per_m_lon_at(target->lat);
 
 	/* 5. Upsert + arm the dead-reckon worker. */
 	s_ghost_last_step_ms = k_uptime_get();
@@ -1011,12 +1011,44 @@ int collision_ghost_start(double tca_s, double miss_m, int alt_ft)
 
 	LOG_INF("GHOST start: target=%s hdg=%.0f alt=%d, ghost=%s @ (%.4f, %.4f) "
 		"hdg=%.0f alt=%d tca=%.0fs miss=%.0fm range=%.0fm",
-		target.icao, target_hdg,
-		(target.valid_mask & AIRCRAFT_VALID_ALT) ? target.alt_ft : -1,
+		target->icao, target_hdg,
+		(target->valid_mask & AIRCRAFT_VALID_ALT) ? target->alt_ft : -1,
 		GHOST_ICAO,
 		s_ghost_lat, s_ghost_lon, s_ghost_hdg_deg,
 		s_ghost_alt_ft, tca_s, miss_m, range_m);
 	return 0;
+}
+
+/* Public entry — BLE_SIM auto-find variant (the original behaviour).
+ * Falls back to calling `ghost_start_internal` with the first SRC_BLE_SIM
+ * aircraft found in the DB. Returns -ENOENT if none. */
+int collision_ghost_start(double tca_s, double miss_m, int alt_ft)
+{
+	struct aircraft_t target = {0};
+	struct find_ctx ctx = { .out = &target, .found = false };
+	aircraft_db_for_each(find_ble_sim_cb, &ctx);
+	if (!ctx.found) {
+		LOG_WRN("ghost_start: no BLE_SIM aircraft in DB yet");
+		return -ENOENT;
+	}
+	return ghost_start_internal(&target, tca_s, miss_m, alt_ft);
+}
+
+/* Public entry — explicit-target variant. Spawns gh05t1 on a head-on
+ * intercept with whichever ICAO the operator passes (any source: ADS-B,
+ * BLE_SIM, even another FICT entry). Returns -ENOENT if not in the DB. */
+int collision_ghost_start_at(const char *target_icao,
+			     double tca_s, double miss_m, int alt_ft)
+{
+	if (target_icao == NULL || target_icao[0] == '\0') {
+		return collision_ghost_start(tca_s, miss_m, alt_ft);
+	}
+	struct aircraft_t target = {0};
+	if (aircraft_db_lookup(target_icao, &target) != 0) {
+		LOG_WRN("ghost_start_at: %s not in DB", target_icao);
+		return -ENOENT;
+	}
+	return ghost_start_internal(&target, tca_s, miss_m, alt_ft);
 }
 
 int collision_ghost_stop(void)

@@ -116,6 +116,14 @@ int  collision_inject_stop(void);
  * the DB yet. */
 int  collision_ghost_start(double tca_s, double miss_m, int alt_ft);
 
+/* Same as `collision_ghost_start` but targets an EXPLICIT ICAO from the
+ * DB (BLE_SIM, ADS-B, or any FICT entry). Lets the operator put a ghost
+ * on an intercept with any aircraft, not just Will's BLE sim. Returns
+ * -ENOENT if `target_icao` isn't currently in the DB. Pass target_icao
+ * == NULL to fall back to the BLE-SIM auto-find behaviour. */
+int  collision_ghost_start_at(const char *target_icao,
+			      double tca_s, double miss_m, int alt_ft);
+
 /* Stop the ghost worker. Ghost stale-evicts naturally after 10 s. */
 int  collision_ghost_stop(void);
 

@@ -1,11 +1,22 @@
 /*
- * SkyWatch controller shell — Phase 2.1 skeleton.
+ * SkyWatch controller shell — `skywatch ...` subcommand tree on ACM0.
  *
- * Stage:    2.1
- * Purpose:  Single `skywatch` subcommand tree with one `ping` leaf so we can
- *           prove the shell is alive over ACM0 ("skywatch ping" -> "pong").
- *           Later phases hang db/kalman/ble/collision subcommands off the
- *           same root (Stages 4.3, 7.3, 8.x).
+ * Single root command (`skywatch`) with seven subcommand groups built
+ * up incrementally across phases:
+ *   ping              — Phase 2.1 liveness check (returns "pong")
+ *   usb               — Phase 2 USB stats
+ *   ble               — Phase 3 BLE central state + scanning
+ *   db                — Phase 4 aircraft DB inspection
+ *   kalman            — Phase 7 KF tuning + microbench
+ *   collision         — Phase 8 detector stats + inject / ghost / ghost_at /
+ *                       ghost_stop / crash (CRASH was added Phase 11)
+ *   missile           — Phase 11 pursuit-missile sandbox
+ *   diversion         — Phase 11 manual diversion suggestion to the sim
+ *   test_json         — Phase 2.3 JSON-parser sanity check
+ *
+ * All output goes to the shell-uart (ttyACM0 via Zephyr's shell backend);
+ * data lines (aircraft JSON + collision frames) go to ttyACM1 via
+ * usb_serial_println() so the two ports never mix.
  */
 
 #include <stdlib.h>
@@ -25,7 +36,6 @@
 #include "kalman.h"
 #include "collision.h"
 #include "missile.h"
-#include "imm.h"
 
 //Purpose: This function prints the fields of a parsed `struct aircraft_t` 
 // to the shell.
@@ -392,100 +402,6 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_kalman,
 	SHELL_SUBCMD_SET_END
 );
 
-/* ---------- skywatch imm ... ----------------------------------------- */
-
-static int cmd_imm_on(const struct shell *sh, size_t argc, char **argv)
-{
-	ARG_UNUSED(argc); ARG_UNUSED(argv);
-	g_imm_enabled = true;
-	shell_print(sh, "IMM enabled — pred_lat/pred_lon now use the CV+CT fused estimate");
-	return 0;
-}
-
-static int cmd_imm_off(const struct shell *sh, size_t argc, char **argv)
-{
-	ARG_UNUSED(argc); ARG_UNUSED(argv);
-	g_imm_enabled = false;
-	shell_print(sh, "IMM disabled — pred_lat/pred_lon revert to CV-only Kalman");
-	return 0;
-}
-
-static int cmd_imm_show(const struct shell *sh, size_t argc, char **argv)
-{
-	ARG_UNUSED(argc); ARG_UNUSED(argv);
-	shell_print(sh, "enabled=%s  q_omega=%.3f rad/s",
-		    g_imm_enabled ? "yes" : "no", g_imm_q_omega);
-	return 0;
-}
-
-/* Per-aircraft mode probabilities. Looks up by ICAO; if none given, dumps
- * the first BLE_SIM aircraft (typically Will's mobile) since that's the
- * one running circles to show off CT identification. */
-struct imm_dump_ctx { const char *want_icao; const struct shell *sh; int dumped; };
-static bool imm_dump_cb(const struct aircraft_db_entry *e, void *user)
-{
-	struct imm_dump_ctx *ctx = user;
-	bool match = ctx->want_icao
-		     ? (strncmp(e->ac.icao, ctx->want_icao,
-				AIRCRAFT_ICAO_BUF_LEN) == 0)
-		     : (e->ac.source == SRC_BLE_SIM);
-	if (!match) return true;
-	shell_print(ctx->sh,
-		    "%s  p(CV)=%.2f p(CT)=%.2f  omega=%+.3f rad/s (%+.1f°/s)  updates=%u",
-		    e->ac.icao,
-		    e->imm.mode_probs[0], e->imm.mode_probs[1],
-		    e->imm.ct.x[4],
-		    e->imm.ct.x[4] * (180.0 / 3.14159265358979323846),
-		    e->imm.cv.update_count);
-	ctx->dumped++;
-	return ctx->want_icao ? false : true;   /* keep going if no filter */
-}
-
-static int cmd_imm_stats(const struct shell *sh, size_t argc, char **argv)
-{
-	const char *want = (argc > 1) ? argv[1] : NULL;
-	struct imm_dump_ctx ctx = { .want_icao = want, .sh = sh, .dumped = 0 };
-	aircraft_db_for_each(imm_dump_cb, &ctx);
-	if (ctx.dumped == 0) {
-		shell_print(sh, "no %s aircraft in DB",
-			    want ? want : "BLE_SIM");
-	}
-	return 0;
-}
-
-/* 1000-iteration predict+update microbench. Plan bar: <10 ms per call
- * (looser than CV's 5 ms — CT EKF adds work). */
-static int cmd_imm_bench(const struct shell *sh, size_t argc, char **argv)
-{
-	ARG_UNUSED(argc); ARG_UNUSED(argv);
-	struct imm_state s;
-	imm_init(&s, -27.4975, 153.0137);
-	double lat = -27.4975, lon = 153.0137;
-
-	int64_t t_start = k_uptime_ticks();
-	for (int i = 0; i < 1000; i++) {
-		imm_predict(&s, 0.5);
-		lat += 1e-5;
-		lon += 1e-5;
-		imm_update(&s, lat, lon);
-	}
-	int64_t t_end = k_uptime_ticks();
-
-	uint64_t us = k_ticks_to_us_near64((uint64_t)(t_end - t_start));
-	shell_print(sh, "1000 iterations: total=%llu us, avg=%llu us/call (limit 10000)",
-		    (unsigned long long)us, (unsigned long long)(us / 1000));
-	return 0;
-}
-
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_imm,
-	SHELL_CMD(on,    NULL, "Use IMM fused estimate for pred_lat/pred_lon.", cmd_imm_on),
-	SHELL_CMD(off,   NULL, "Revert to CV-only Kalman for predictions.",     cmd_imm_off),
-	SHELL_CMD(show,  NULL, "Print enabled flag + q_omega tuning.",          cmd_imm_show),
-	SHELL_CMD(stats, NULL, "Per-aircraft mode probs + ω. Optional [icao].", cmd_imm_stats),
-	SHELL_CMD(bench, NULL, "1000-iteration predict+update timing (CV+CT).", cmd_imm_bench),
-	SHELL_SUBCMD_SET_END
-);
-
 /* ---------- skywatch collision ... ----------------------------------- */
 
 static int cmd_collision_stats(const struct shell *sh, size_t argc, char **argv)
@@ -554,6 +470,41 @@ static int cmd_collision_ghost(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "keep-alive ON until `skywatch collision ghost_stop`");
 	shell_print(sh, "vertical-sep gate: %d ft (use `aircraft wasd q` x10 on Will to climb 500m and clear)",
 		    COLLISION_VERTICAL_SEP_FT);
+	return 0;
+}
+
+static int cmd_collision_ghost_at(const struct shell *sh, size_t argc, char **argv)
+{
+	/* Positional: <icao> [tca_s] [miss_m] [alt_ft]
+	 * Like `collision ghost` but targets an explicit ICAO from the DB
+	 * (BLE_SIM, ADS-B, or any FICT entry). Useful for staging a head-on
+	 * intercept against a real ADS-B aircraft when Will's sim isn't
+	 * around, or against c011a1/c011b2 from `collision inject`. */
+	if (argc < 2) {
+		shell_error(sh, "usage: skywatch collision ghost_at <icao> [tca_s] [miss_m] [alt_ft]");
+		return -EINVAL;
+	}
+	const char *target_icao = argv[1];
+	double tca_s  = (argc > 2) ? strtod(argv[2], NULL) : -1.0;
+	double miss_m = (argc > 3) ? strtod(argv[3], NULL) : -1.0;
+	int    alt_ft = (argc > 4) ? atoi(argv[4])         : -1;
+
+	int rc = collision_ghost_start_at(target_icao, tca_s, miss_m, alt_ft);
+	if (rc == -ENOENT) {
+		shell_error(sh, "ghost_at: '%s' not in DB. `skywatch db dump` to list ICAOs.", target_icao);
+		return rc;
+	}
+	if (rc) {
+		shell_error(sh, "ghost_at: failed: %d", rc);
+		return rc;
+	}
+	shell_print(sh,
+		    "ghost gh05t1 spawned on %s: tca=%s miss=%s alt=%s",
+		    target_icao,
+		    (argc > 2) ? argv[2] : "23s (default)",
+		    (argc > 3) ? argv[3] : "0m (default)",
+		    (argc > 4) ? argv[4] : "match-target (default)");
+	shell_print(sh, "keep-alive ON until `skywatch collision ghost_stop`");
 	return 0;
 }
 
@@ -657,6 +608,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_collision,
 		  cmd_collision_stop),
 	SHELL_CMD(ghost,      NULL, "Spawn FICT on head-on intercept with current BLE_SIM aircraft.",
 		  cmd_collision_ghost),
+	SHELL_CMD(ghost_at,   NULL, "Spawn FICT on intercept with a specific ICAO. Usage: ghost_at <icao> [tca_s] [miss_m] [alt_ft]",
+		  cmd_collision_ghost_at),
 	SHELL_CMD(ghost_stop, NULL, "Stop the ghost dead-reckoning (lets gh05t1 stale-evict).",
 		  cmd_collision_ghost_stop),
 	SHELL_CMD(crash,      NULL, "Manually trigger CRASH between two ICAOs. Usage: crash <icao_a> <icao_b>",
@@ -713,7 +666,6 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_skywatch,
 	SHELL_CMD(ble, &sub_ble, "BLE central / bridge subcommands.", NULL),
 	SHELL_CMD(db,  &sub_db,  "Aircraft database subcommands.", NULL),
 	SHELL_CMD(kalman, &sub_kalman, "Kalman filter tuning + bench.", NULL),
-	SHELL_CMD(imm,    &sub_imm,    "IMM (CV+CT) filter A/B toggle + stats.", NULL),
 	SHELL_CMD(collision, &sub_collision, "Collision detection.", NULL),
 	SHELL_CMD(diversion, &sub_diversion, "Manual diversion suggestion to the BLE sim.", NULL),
 	SHELL_CMD(missile, &sub_missile, "Pursuit-missile demo.", NULL),

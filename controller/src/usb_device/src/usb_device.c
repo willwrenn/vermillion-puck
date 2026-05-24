@@ -1,11 +1,23 @@
+/*
+ * SkyWatch controller — USB device + dual-CDC-ACM bring-up.
+ *
+ * Registers `cdc_acm_uart0` (shell + console on ttyACM0) and
+ * `cdc_acm_uart1` (data port on ttyACM1, defined in app.overlay), then
+ * enables the USB stack via a SYS_INIT priority hook. Replaces the
+ * default CDC_ACM_SERIAL_INITIALIZE_AT_BOOT path so we control the
+ * enumeration order — host-side `whichport.sh` relies on the shell
+ * port enumerating first.
+ *
+ * VID:PID 2fe3:0005 — Zephyr/dev-board OUI range (no collision with
+ * the Adafruit nRF UF2 bootloader's 2886:0045, so the host can tell
+ * which mode the board is in just from `lsusb`).
+ */
 #include <zephyr/usb/usbd.h>
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(usb_device, LOG_LEVEL_INF);
 
-// custom USB init — registers cdc_acm_0 (shell/ttyACM0) then cdc_acm_1 (data/ttyACM1)
-// replaces CDC_ACM_SERIAL_INITIALIZE_AT_BOOT
 USBD_DEVICE_DEFINE(miniproject_usbd,
 		   DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
 		   0x2fe3, 0x0005);

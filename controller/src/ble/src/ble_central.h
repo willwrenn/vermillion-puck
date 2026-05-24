@@ -1,19 +1,16 @@
 /*
- * SkyWatch controller — BLE GATT central, telemetry receive side.
- *
- * Stages 3.1 + 3.2 of the build plan.
+ * SkyWatch controller — BLE GATT central, both directions.
  *
  * Discovers the SkyWatch aircraft service on a peripheral advertising as
- * `skywatch-sim` (William's sim node). Subscribes to the aircraft
- * characteristic (NOTIFY). On every notification, validates length and
- * hands the raw `struct ble_aircraft_frame` to `bridge/` via
- * `bridge_submit_frame()`. Connection-management plumbing
- * (scan/connect/MTU/discover/auto-reconnect) is intentionally kept thin
- * and *only* concerned with bytes-in.
+ * `skywatch-sim` (William's sim node). Two-stage GATT discovery:
+ *   1. SkyWatch aircraft service + characteristic — NOTIFY, position
+ *      frames in via bridge_submit_frame() (Stage 3.x).
+ *   2. Warning service (`ab340001-...`) + characteristic — WRITE,
+ *      collision / diversion / CRASH frames out via
+ *      ble_central_send_warning() (Stage 8.3 / Stage 11).
  *
- * NB: the controller→sim warning service (Will's custom `ab340001-...`)
- * is intentionally deferred to Stage 8.3. We do not discover or write to
- * it here.
+ * Plus a watchdog k_work that auto-reconnects every 2 s when the link
+ * drops, so the demo survives the sim being unplugged + replugged.
  */
 
 #ifndef BLE_CENTRAL_H

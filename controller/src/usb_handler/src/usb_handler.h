@@ -1,11 +1,11 @@
 /*
- * SkyWatch controller — USB CDC ACM1 data-port Rx handler.
+ * SkyWatch controller — USB CDC data-port Rx handler.
  *
- * Stage:   2.2
- * Purpose: Interrupt-driven Rx on cdc_acm_uart0 (the data port, /dev/ttyACM1).
- *          Reassembles newline-delimited frames. Phase 2.2 logs each complete
- *          line via LOG_INF; Phase 2.3 will replace the log call with a hand-off
- *          to the JSON parser thread.
+ * Interrupt-driven Rx on `cdc_acm_uart1` (the data port,
+ * host-side /dev/ttyACM1). Reassembles newline-delimited frames from
+ * the ring buffer, hands each complete line to the JSON parser thread,
+ * and routes the resulting `aircraft_t` to `aircraft_db_upsert()`.
+ * Stats counters exposed below for shell inspection + soak verification.
  */
 
 #ifndef USB_HANDLER_H

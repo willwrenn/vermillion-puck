@@ -1,14 +1,15 @@
 /*
- * SkyWatch controller — BLE binary frame -> aircraft_t bridge (Stage 3.3).
+ * SkyWatch controller — BLE binary frame -> aircraft_t bridge.
  *
  * Inputs:  `struct ble_aircraft_frame` (binary, common/src/ble_packet.h)
  *          via bridge_submit_frame() called from the BLE notify callback.
- * Outputs: `struct aircraft_t` (common/src/aircraft_t.h) — currently LOG_INF'd;
- *          Stage 4.2 will route into aircraft_db.
+ * Outputs: `struct aircraft_t` (common/src/aircraft_t.h) routed to
+ *          `aircraft_db_upsert()` so the sim's position fuses with any
+ *          ADS-B traffic in the same per-aircraft KF.
  *
  * Owns the producer/consumer queue between the BLE stack's notify callback
- * (called in the BT work-queue context) and the bridge worker thread that
- * actually does validation + struct conversion + LOG_INF.
+ * (BT work-queue context) and the bridge worker thread that validates,
+ * converts, and upserts.
  */
 
 #ifndef BRIDGE_H

@@ -29,11 +29,11 @@
 LOG_MODULE_REGISTER(bridge, LOG_LEVEL_INF);
 
 #define BRIDGE_QUEUE_DEPTH   8
-/* 4096 because aircraft_db_upsert now drives the 5x5 IMM EKF math
- * (Phase 9) — its locals (Pm/F/Q/FP/Ft/FPFt/Pm_new ≈ 1400 B) plus the
- * existing call-chain overflowed the original 2048 B stack the moment
- * Will's mobile started pushing BLE notifications. Symptom was a hang
- * + frozen heartbeat LED right after BT connect. */
+/* 4096 B (was 2048) — aircraft_db_upsert() drives Kalman matrix math
+ * and snprintf'd log lines, and the original 2048 B stack overflowed
+ * silently the moment Will's mobile started pushing BLE notifications.
+ * HW_STACK_PROTECTION (see prj.conf) now catches any future regression
+ * with a visible oops instead of a wedged heartbeat LED. */
 #define BRIDGE_STACK         4096
 #define BRIDGE_PRIO          7
 

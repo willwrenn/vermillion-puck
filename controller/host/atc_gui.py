@@ -1,40 +1,48 @@
 """
-SkyWatch ATC GUI — tabular + map live view of the controller's aircraft DB.
+SkyWatch ATC GUI — tabular + map live view of the controller's aircraft DB,
+plus the host-side fan-out to MQTT + InfluxDB Cloud.
 
-Stage:     6
-Task IDs:  6.1 (table), 6.2 (map)
+Phases covered (incremental — read the docstring then `git log` for the
+full story):
+    6   table + map widgets, dark theme, lat/lon grid
+    6.3 50-point alpha-fade trail per aircraft on the map
+    7.4 Kalman-prediction dashed-arrow overlay
+    8.4 collision alert banner + collision-history dashboard
+    10  MQTT publisher + InfluxDB writer sidecars (background threads)
+    11  CRASH dark-red banner + per-aircraft hide-then-respawn window
+    12  Brisbane basemap, mouse zoom + click-to-track, "actual_sep_m"
+        history tracking, dynamic Δalt label, CRASH? column
+
 Inputs:
-    Newline-delimited AircraftFrame JSON, one object per line, per
-    resources/standards/json_protocol.md. Three input modes:
+    Newline-delimited AircraftFrame / CollisionFrame JSON, one object per
+    line, per resources/standards/json_protocol.md. Three input modes:
         --port /dev/ttyACM1         live from the controller's data port
         --stdin                     pipe from sdr_bridge --test or similar
         --file path                 replay a captured log
 Outputs:
     PyQt6 window, dark theme, refreshed at 2 Hz.
-    Default layout is split-pane: lat/lon-grid map on the left, table on the
-    right. `--view` chooses one of {both, map, table}.
+    Optional: MQTT publish to `skywatch/collision[/{pair}]` and InfluxDB
+    Cloud writes to bucket `skywatch` (both opt-in via env / creds; GUI
+    degrades gracefully if either is unavailable).
 Run:
     cd /home/blaise/finalproject4011
-    # live against firmware (5.1+):
+    # live against firmware:
     python3 scripts/stage6/atc_gui.py --port /dev/ttyACM1
-
     # hardware-free dev loop:
     python3 scripts/stage1/sdr_bridge.py --test 2>/dev/null \
       | python3 scripts/stage6/atc_gui.py --stdin
-
-    # show just the map (good for debugging icon placement):
+    # show just the map:
     python3 scripts/stage6/atc_gui.py --port /dev/ttyACM1 --view map
 Notes:
     - Schema validation uses resources/standards/json_protocol.py — the same
-      validator the test suite uses. Garbage lines are dropped silently and
-      counted (status bar).
+      validator the test suite uses. Garbage lines are dropped silently
+      and counted in the status bar.
     - Stale rows: any aircraft not refreshed for >10 s is removed (matches
       firmware AIRCRAFT_DB_STALE_MS).
     - Reader runs in a daemon thread; rows update via a Qt signal/slot, so
       the main thread is the only one touching widgets.
     - Map bounds default to ±0.5° around Brisbane (-27.4975, 153.0137). Use
       `--lat-center / --lon-center / --span-deg` to retarget.
-    - 6.3 will add a 50-point alpha-fade trail per aircraft on the map.
 """
 
 from __future__ import annotations
@@ -1366,17 +1374,28 @@ def main(argv: Optional[list] = None) -> int:
     reader = JsonLineReader(src, q, stats)
     reader.start()
 
-    app = QApplication.instance() or QApplication(sys.argv)
-    dispatcher = FrameDispatcher(q)
-    win = AtcMainWindow(src_label, stats, dispatcher,
-                        view_mode=args.view,
-                        lat_center=args.lat_center,
-                        lon_center=args.lon_center,
-                        span_deg=args.span_deg)
-    win.show()
-    rc = app.exec()
-
-    reader.stop()
+    try:
+        app = QApplication.instance() or QApplication(sys.argv)
+        dispatcher = FrameDispatcher(q)
+        win = AtcMainWindow(src_label, stats, dispatcher,
+                            view_mode=args.view,
+                            lat_center=args.lat_center,
+                            lon_center=args.lon_center,
+                            span_deg=args.span_deg)
+        win.show()
+        rc = app.exec()
+    finally:
+        # Clean shutdown: stop the reader thread, then release the
+        # underlying source (serial port / file). Process exit would
+        # collect these anyway, but explicit close keeps logs tidy
+        # and matches the no-leak invariant of the rest of the GUI.
+        reader.stop()
+        try:
+            close = getattr(src, "close", None)
+            if callable(close) and src is not sys.stdin.buffer:
+                close()
+        except Exception:
+            pass
     return rc
 
 

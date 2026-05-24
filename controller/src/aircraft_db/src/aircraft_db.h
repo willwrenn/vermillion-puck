@@ -23,7 +23,6 @@
 
 #include "aircraft_t.h"
 #include "kalman.h"
-#include "imm.h"
 
 #define AIRCRAFT_DB_MAX_ENTRIES    32
 #define AIRCRAFT_DB_STALE_MS       10000   /* per plan: 10 s */
@@ -39,10 +38,7 @@ struct aircraft_db_entry {
 	sys_snode_t          node;
 	struct aircraft_t    ac;
 	int64_t              last_seen_ms;  /* k_uptime_get() at last upsert */
-	struct kalman_state  kf;            /* per-aircraft CV-only Kalman (always on) */
-	struct imm_state     imm;           /* per-aircraft IMM (Stage 9). Always runs;
-					     * g_imm_enabled gates which prediction the
-					     * publisher actually writes into pred_lat/lon. */
+	struct kalman_state  kf;            /* per-aircraft CV Kalman state */
 };
 
 void aircraft_db_init(void);
