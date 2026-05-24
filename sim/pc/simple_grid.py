@@ -189,15 +189,6 @@ tk.Label(panel, text="\nLast packet:", bg="#0a0f1a", fg="#546e7a",
 tk.Label(panel, textvariable=raw_var, bg="#0a0f1a", fg="#546e7a",
          font=("Courier", 8), wraplength=200, justify="left").pack(anchor="w", padx=4)
 
-if mode == "serial":
-    tk.Label(panel, text="\nType cmds in another terminal:\nscreen /dev/ttyACM1 115200",
-             bg="#0a0f1a", fg="#546e7a",
-             font=("Courier", 8), justify="left").pack(anchor="w", padx=4, pady=(10, 0))
-else:
-    hint = f'echo \'{{"lat":-27.4975,\n"lon":153.0137}}\' |\nnc localhost {args.tcp}'
-    tk.Label(panel, text=f"\n{hint}", bg="#0a0f1a", fg="#546e7a",
-             font=("Courier", 8), justify="left").pack(anchor="w", padx=4, pady=(10, 0))
-
 pkt_count = [0]
 
 # ── Collision warning panel ───────────────────────────────────────────────────
@@ -483,7 +474,7 @@ def handle_line(text):
     canvas.itemconfig(coord, text=f"{lat:.4f}, {lon:.4f}")
     lat_var.set(f"LAT: {lat:+.5f}°")
     lon_var.set(f"LON: {lon:.5f}°")
-    alt_var.set(f"ALT: {int(pkt.get('alt', 0))} m")
+    alt_var.set(f"ALT: {int(pkt.get('alt', 0) * 3.28084)} ft")
     pkt_count[0] += 1
     pkt_var.set(f"Packets: {pkt_count[0]}")
     status_var.set("● LIVE")
