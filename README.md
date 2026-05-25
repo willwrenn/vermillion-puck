@@ -55,7 +55,10 @@ vermillion-puck/
 │       ├── mqtt_publisher.py  paho-mqtt background thread
 │       ├── influx_writer.py   InfluxDB Cloud background thread
 │       ├── run_skywatch.sh    One-shot launcher (this is what you run)
-│       └── assets/            Brisbane greyscale basemap PNG
+│       ├── assets/            Brisbane greyscale basemap PNG
+│       └── scripts/
+│           ├── test_pipeline.py  Synthetic CollisionFrame burst (Phase 10 verify)
+│           └── SETUP.md          Mosquitto + InfluxDB dashboard recipe
 ├── sim/                       Will's sim mobile + tkinter PC GUI
 │   ├── mobile/                Zephyr firmware (BLE peripheral)
 │   ├── pc/
@@ -63,6 +66,12 @@ vermillion-puck/
 │   │   ├── staticmap.jpeg     Brisbane background image
 │   │   └── run_dashboard.sh
 │   └── README.md
+├── resources/standards/       Wire-format specs — single source of truth
+│   ├── json_protocol.{md,py}    AircraftFrame + CollisionFrame schema
+│   │                            (the .py is the runtime validator the GUI
+│   │                            imports — DO NOT delete or the GUI won't start)
+│   ├── ble_protocol.md          BLE GATT services + frame layouts
+│   └── fusion.md                ADS-B + BLE fusion design notes
 └── POSTER_FINAL_PROJECT.pptx  Presentation poster (final submission)
 ```
 
@@ -255,6 +264,61 @@ mosquitto_sub -t 'skywatch/#' -v
 
 Topics: `skywatch/collision` (every frame) + `skywatch/collision/{pair}`
 (per-pair retained) + `skywatch/status` (online / offline last-will).
+
+---
+
+## Running on a second laptop from scratch (e.g. Will's machine)
+
+Everything you need is in this repo. Assuming you have **both** Xiao
+boards + a Linux/WSL host with Zephyr SDK + Python 3.10+:
+
+```bash
+# 1. Clone:
+git clone https://github.com/willwrenn/vermillion-puck.git
+cd vermillion-puck
+
+# 2. Host deps (one-time):
+sudo apt install -y mosquitto mosquitto-clients
+sudo systemctl enable --now mosquitto
+pip install --break-system-packages \
+    pyserial PyQt6 requests paho-mqtt influxdb-client Pillow
+
+# 3. Build both firmwares (with zephyr-env.sh sourced):
+west build -b xiao_ble/nrf52840/sense -d /tmp/sw/controller controller
+west build -b xiao_ble/nrf52840/sense -d /tmp/sw/sim        sim/mobile
+
+# 4. Flash — ONE AT A TIME (both boards mount as XIAO-SENSE in
+#    bootloader). Double-tap reset on the target board → drag-drop:
+cp /tmp/sw/controller/zephyr/zephyr.uf2 /media/$USER/XIAO-SENSE/ && sync
+# (wait for green LED, then double-tap reset on the OTHER board)
+cp /tmp/sw/sim/zephyr/zephyr.uf2        /media/$USER/XIAO-SENSE/ && sync
+
+# 5. Sanity-check the host pipeline WITHOUT firmware running:
+source <(grep '^export INFLUXDB' controller/host/run_skywatch.sh)
+python3 controller/host/scripts/test_pipeline.py
+# → 6 synthetic CollisionFrames go to MQTT (broker) + InfluxDB.
+# → Confirm by: mosquitto_sub -t 'skywatch/#' -v
+# → And in InfluxDB Cloud Data Explorer:
+#   SELECT * FROM "skywatch_events" WHERE time >= now() - interval '5 minutes'
+
+# 6. Run the full stack in four terminals:
+#    A — our PyQt ATC GUI (close window or Ctrl-C to quit):
+bash controller/host/run_skywatch.sh --no-sdr
+#    B — controller's Zephyr shell (for `skywatch ...` commands):
+screen /dev/ttyACM0 115200
+#    C — your tkinter sim GUI:
+cd sim/pc && python3 simple_grid.py --port /dev/ttyACM3 --map staticmap.jpeg
+#    D — sim aircraft control (paste once, then issue `ac` / `circle`):
+function ac()     { echo -e "aircraft $*\r"        > /dev/ttyACM3; }
+function circle() { echo -e "aircraft circle $*\r" > /dev/ttyACM3; }
+```
+
+That's the whole bring-up. From here, drive the scenarios in §**Test**
+above. **No external scripts or out-of-repo dependencies required.**
+
+WSL note: boards have to be `usbipd attach --wsl --busid X-Y`'d from
+Windows-side Admin PowerShell before WSL sees them as /dev/ttyACM*.
+If a board drops off WSL after a bootloader excursion, re-attach.
 
 ---
 
