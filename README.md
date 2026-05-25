@@ -61,11 +61,10 @@ vermillion-puck/
 │           └── SETUP.md          Mosquitto + InfluxDB dashboard recipe
 ├── sim/                       Will's sim mobile + tkinter PC GUI
 │   ├── mobile/                Zephyr firmware (BLE peripheral)
-│   ├── pc/
-│   │   ├── simple_grid.py     tkinter map GUI for the sim aircraft
-│   │   ├── staticmap.jpeg     Brisbane background image
-│   │   └── run_dashboard.sh
-│   └── README.md
+│   └── pc/
+│       ├── simple_grid.py     tkinter map GUI for the sim aircraft
+│       ├── staticmap.jpeg     Brisbane background image
+│       └── run_dashboard.sh
 ├── resources/standards/       Wire-format specs — single source of truth
 │   ├── json_protocol.{md,py}    AircraftFrame + CollisionFrame schema
 │   │                            (the .py is the runtime validator the GUI
@@ -173,11 +172,53 @@ cd sim/pc && python3 simple_grid.py --port /dev/ttyACM3 --map staticmap.jpeg
 ```bash
 function ac()     { echo -e "aircraft $*\r"        > /dev/ttyACM3; }
 function circle() { echo -e "aircraft circle $*\r" > /dev/ttyACM3; }
-ac reset             # snap to St Lucia origin
-ac wasd w; ac wasd w # +20 kt
-ac wasd a            # turn left 10°
-circle 80 800        # auto-circle 80 kt, 800 m radius
-circle 0             # stop circling
+```
+
+Add to `~/.bashrc` once (`source ~/.bashrc`) so they persist across sessions.
+
+#### Position + flight parameters
+
+```bash
+ac set <lat_e7> <lon_e7> <alt_m> <speed_kt> <heading_deg>
+```
+
+| Parameter | Unit | Example |
+|---|---|---|
+| `lat_e7` | degrees × 1e7 | `-274975000` |
+| `lon_e7` | degrees × 1e7 | `1530137000` |
+| `alt_m` | metres | `500` |
+| `speed_kt` | knots | `60` |
+| `heading_deg` | degrees 0–359 | `90` |
+
+```bash
+ac set -274975000 1530137000 500 60 90   # St Lucia, 500 m, 60 kt heading east
+```
+
+#### WASD nudge
+
+```bash
+ac wasd w    # speed +10 kt
+ac wasd s    # speed -10 kt
+ac wasd a    # heading -10°
+ac wasd d    # heading +10°
+ac wasd q    # altitude +50 m
+ac wasd e    # altitude -50 m
+```
+
+#### Circle mode
+
+```bash
+circle 60 1000     # 60 kt, 1000 m radius
+circle 120 3000    # 120 kt, 3 km radius (wider turns)
+circle 60 300      # 60 kt, 300 m radius (tight)
+circle 0           # stop circling, hold current heading
+```
+
+#### Other
+
+```bash
+ac reset             # snap back to St Lucia, zero speed
+ac status            # print current position as JSON
 ```
 
 ---
@@ -240,6 +281,39 @@ skywatch kalman bench       # 1000 predict+update iterations (target <5 ms)
 skywatch kalman show        # current process/measurement noise (q, r)
 skywatch collision stats    # ticks / pairs checked / advisories / warnings
 ```
+
+---
+
+## BLE Frame Format
+
+Sim mobile → controller over GATT NOTIFY (`ble_aircraft_frame`, defined in `sim/mobile/src/common/src/ble_packet.h`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `source` | uint8 | `1` = BLE_SRC_BLE_SIM |
+| `flags` | uint8 | ALT_VALID, VEL_VALID, HDG_VALID |
+| `icao24` | uint32 LE | Low 24 bits |
+| `lat` | float64 LE | WGS-84 degrees |
+| `lon` | float64 LE | WGS-84 degrees |
+| `alt_ft` | int16 LE | Altitude in **feet** MSL |
+| `vel_kt` | int16 LE | Ground speed in knots |
+| `hdg_deg` | int16 LE | Heading degrees true 0–359 |
+| `ts_ms` | uint32 LE | ms since boot |
+
+Frame size: **38 bytes**. Update rate: **5 Hz**.
+
+> `alt_ft` is feet. Shell commands (`ac set`, `ac wasd q/e`) use metres — firmware converts on send (metres × 3.28084).
+
+---
+
+## GUI Map Bounds
+
+Both GUIs cover the greater Brisbane area:
+
+| Corner | Latitude | Longitude |
+|---|---|---|
+| Top-left | -27.34° | 152.83° |
+| Bottom-right | -27.535° | 153.21° |
 
 ---
 
@@ -344,6 +418,48 @@ reversion commits.
 - 2× Seeed **Xiao nRF52840 Sense** (one controller, one sim).
 - 1× NESDR / RTL-SDR USB dongle (optional, real ADS-B input).
 - Host laptop running Linux / WSL with Zephyr SDK + Python 3.10+.
+
+## References
+
+### Zephyr RTOS examples used
+
+The following Zephyr samples were used as structural references during development.
+All are located under `zephyr/samples/bluetooth/` in the Zephyr SDK.
+
+**[1] `zephyr/samples/bluetooth/peripheral/src/main.c`**
+Used in `sim/mobile/src/main/src/codein.c`.
+Source for the BLE peripheral pattern: `BT_CONN_CB_DEFINE`, `connected()` / `disconnected()` callback signatures, `bt_le_adv_start()` call structure, and the `BT_GATT_SERVICE_DEFINE` / `BT_GATT_CHARACTERISTIC` / `BT_GATT_CCC` macro idiom for registering a custom vendor GATT service.
+
+**[2] `zephyr/samples/bluetooth/mtu_update/peripheral/src/peripheral_mtu_update.c`**
+Used in `sim/mobile/src/main/src/codein.c`.
+Source for the disconnected-then-re-advertise pattern: releasing the connection reference with `bt_conn_unref()` and immediately restarting advertising with `bt_le_adv_start()` so the central can reconnect without a board reset.
+
+**[3] `zephyr/samples/bluetooth/peripheral_nus/src/main.c`**
+Referenced in `sim/mobile/src/common/src/ble_packet.h` and `sim/mobile/src/main/src/codein.c`.
+Source for the peripheral GAP advertising setup and the `BT_UUID_128_ENCODE()` / `BT_UUID_DECLARE_128()` idiom used to register 128-bit custom service UUIDs. NUS itself was not used — the UUID and frame format are entirely custom (see `ble_packet.h`).
+
+**[4] `zephyr/samples/bluetooth/peripheral/src/main.c` — custom GATT service pattern**
+Used in `controller/src/ble/src/ble_central.c`.
+The Zephyr peripheral sample defines vendor characteristics with custom 128-bit UUIDs using `BT_UUID_INIT_128` + `BT_GATT_SERVICE_DEFINE`. The controller's GATT central mirrors this on the discovery side: the four-stage state machine (`DISC_SVC → DISC_CHR → DISC_WARN_SVC → DISC_WARN_CHR`) was written to discover the same two custom services that the sim node registers using this pattern.
+
+### Mini-project reference
+
+**[5] `firmware/CSSE4011-Mini-Project/base/src/ble_central.c`**
+Used in `controller/src/ble/src/ble_central.c`.
+The earlier mini-project BLE central (written by Will) provided the structural idea for scan → connect → MTU exchange → GATT discovery → watchdog thread. The controller's `ble_central.c` adapted this state-machine skeleton but replaced all UUIDs, frame formats, and the notification/write pathway with the new SkyWatch protocol defined in `common/src/ble_packet.h`.
+
+### Where no example was available (original implementation)
+
+The following components had no applicable Zephyr or external example and were implemented from scratch:
+
+- **Dual bidirectional custom GATT services** — registering two `BT_GATT_SERVICE_DEFINE` blocks on the same peripheral (one NOTIFY up, one WRITE-WITHOUT-RESPONSE down) with a matching four-stage central discovery state machine. No Zephyr sample covers this pattern.
+- **BLE warning frame protocol and XOR CRC** — the 16-byte `ble_warning_frame` layout, message-type enum (`0x02` collision / `0x03` diversion / `0x04` freetext / `0x05` crash), and CRC validation (`ble_warning_crc`) in `ble_packet.h` / `codein.c`.
+- **Dead-reckoning physics loop** — the 5 Hz send thread in `codein.c` computing lat/lon deltas from heading and speed using trigonometry and the haversine approximation.
+- **Circle / WASD aircraft control** — turn-rate calculation, heading accumulator, and bounded-coordinate clamping in `codein.c`.
+- **Pairwise collision TCA algorithm** — the time-of-closest-approach geometry and ADVISORY / WARNING / CRASH classification in `controller/src/collision/src/collision.c`.
+- **Kalman filter** — the 4D constant-velocity state estimator with white-noise-acceleration process noise in `controller/src/kalman/src/kalman.c`.
+
+---
 
 ## License + attribution
 

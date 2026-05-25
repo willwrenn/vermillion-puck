@@ -52,16 +52,16 @@ def _extract_json(text):
         except json.JSONDecodeError:
             start = idx + 1
 
-LAT_TOP   = -27.34
-LAT_BOT   = -27.535
-LON_LEFT  = 152.83
+LAT_TOP = -27.34
+LAT_BOT = -27.535
+LON_LEFT = 152.83
 LON_RIGHT = 153.21
 W, H = 900, 650
 
 
 def to_canvas(lat, lon):
-    x = (lon - LON_LEFT)  / (LON_RIGHT - LON_LEFT) * W
-    y = (LAT_TOP - lat)   / (LAT_TOP   - LAT_BOT)  * H
+    x = (lon - LON_LEFT) / (LON_RIGHT - LON_LEFT) * W
+    y = (LAT_TOP - lat) / (LAT_TOP - LAT_BOT) * H
     return x, y
 
 
@@ -81,7 +81,7 @@ mode = "serial" if args.port else "tcp"
 
 # ── Window & canvas ───────────────────────────────────────────────────────────
 root = tk.Tk()
-title = f"Lat/Lon Grid  —  {args.port}" if mode == "serial" else f"Lat/Lon Grid  —  TCP :{args.tcp}"
+title = f"Lat/Lon Grid — {args.port}" if mode == "serial" else f"Lat/Lon Grid — TCP :{args.tcp}"
 root.title(title)
 root.configure(bg="#0d1b2a")
 
@@ -89,12 +89,12 @@ canvas = tk.Canvas(root, width=W, height=H, bg="#0d1b2a", highlightthickness=0)
 canvas.pack(side="left")
 
 # ── Map image overlay ─────────────────────────────────────────────────────────
-_map_photo = None  # keep reference so it isn't garbage collected
+_map_photo = None # keep reference so it isn't garbage collected
 
 if args.map:
     if not PIL_OK:
         print("WARNING: Pillow not installed — run: pip install pillow")
-        print("         Map image will not be shown.")
+        print(" Map image will not be shown.")
     else:
         try:
             img = Image.open(args.map).resize((W, H), Image.LANCZOS)
@@ -106,19 +106,19 @@ if args.map:
 
 # ── Grid lines ────────────────────────────────────────────────────────────────
 # Use semi-transparent-style colours when map is loaded (brighter so visible)
-_grid_col  = "#4a6a7a" if args.map else "#2a3a4a"
+_grid_col = "#4a6a7a" if args.map else "#2a3a4a"
 _label_col = "#90b4c4" if args.map else "#546e7a"
 
 _STEP = 0.05
 # snap to nearest clean 0.05° multiple so labels exactly match line positions
 _lat_start = math.ceil( round(LAT_BOT / _STEP, 8)) * _STEP
-_lon_start = math.ceil(round(LON_LEFT  / _STEP, 8)) * _STEP
+_lon_start = math.ceil(round(LON_LEFT / _STEP, 8)) * _STEP
 
 lat = _lat_start
 while lat <= LAT_TOP + 1e-9:
     lat = round(lat, 6)
     x1, y1 = to_canvas(lat, LON_LEFT)
-    x2, _  = to_canvas(lat, LON_RIGHT)
+    x2, _ = to_canvas(lat, LON_RIGHT)
     canvas.create_line(x1, y1, x2, y1, fill=_grid_col)
     canvas.create_text(4, y1, text=f"{lat:.2f}°", fill=_label_col,
                        anchor="w", font=("Courier", 8))
@@ -128,7 +128,7 @@ lon = _lon_start
 while lon <= LON_RIGHT + 1e-9:
     lon = round(lon, 6)
     x1, y1 = to_canvas(LAT_TOP, lon)
-    _,  y2 = to_canvas(LAT_BOT, lon)
+    _, y2 = to_canvas(LAT_BOT, lon)
     canvas.create_line(x1, y1, x1, y2, fill=_grid_col)
     canvas.create_text(x1, H - 4, text=f"{lon:.2f}°", fill=_label_col,
                        anchor="s", font=("Courier", 8))
@@ -160,7 +160,7 @@ trail_items = [
 
 # ── Red dot ───────────────────────────────────────────────────────────────────
 cx, cy = to_canvas((LAT_TOP + LAT_BOT) / 2, (LON_LEFT + LON_RIGHT) / 2)
-dot   = canvas.create_oval(cx-8, cy-8, cx+8, cy+8,
+dot = canvas.create_oval(cx-8, cy-8, cx+8, cy+8,
                             fill="red", outline="white", width=2)
 coord = canvas.create_text(cx + 14, cy, text="", fill="red",
                             anchor="w", font=("Courier", 9))
@@ -193,11 +193,11 @@ pkt_count = [0]
 
 # ── Collision warning panel ───────────────────────────────────────────────────
 _WARN_OFF = "#0a0f1a"
-_WARN_ON  = "#cc0000"
+_WARN_ON = "#cc0000"
 
 warn_box = tk.Frame(panel, bg=_WARN_OFF)
 warn_box.pack(fill="x", padx=4, pady=(14, 0))
-warn_title = tk.Label(warn_box, text="⚠  COLLISION WARNING  ⚠",
+warn_title = tk.Label(warn_box, text="⚠ COLLISION WARNING ⚠",
                       bg=_WARN_OFF, fg=_WARN_OFF,
                       font=("Courier", 9, "bold"), anchor="center")
 warn_title.pack(fill="x")
@@ -235,14 +235,14 @@ def trigger_warning(icao_text):
 
 # ── Diversion instructions panel ─────────────────────────────────────────────
 _DIV_OFF = "#0a0f1a"
-_DIV_ON  = "#7a4a00"
+_DIV_ON = "#7a4a00"
 
 div_box = tk.Frame(panel, bg=_DIV_OFF, relief="flat")
 div_box.pack(fill="x", padx=4, pady=(10, 0))
 tk.Label(div_box, text="── DIVERSION ──",
          bg=_DIV_OFF, fg=_DIV_OFF,
          font=("Courier", 8, "bold"), anchor="center").pack(fill="x")
-div_icao_var  = tk.StringVar(value="")
+div_icao_var = tk.StringVar(value="")
 div_instr_var = tk.StringVar(value="")
 tk.Label(div_box, textvariable=div_icao_var,
          bg=_DIV_OFF, fg="#ffd54f",
@@ -286,7 +286,7 @@ def _trigger_diversion_sticky(msg):
     _div_clear_job[0] = root.after(4500, _clear_diversion)
 
 # ── Collision warning log ─────────────────────────────────────────────────────
-_warn_log = []   # [{icao, start, end|None}], newest first, max 20
+_warn_log = [] # [{icao, start, end|None}], newest first, max 20
 
 tk.Label(panel, text="── WARN LOG ──", bg="#0a0f1a", fg="#546e7a",
          font=("Courier", 8, "bold")).pack(anchor="w", padx=4, pady=(12, 2))
@@ -310,7 +310,7 @@ def _render_warn_log():
             line = f"[{e['start']}] {e['icao']} → ongoing\n"
             tag = "ongoing"
         else:
-            line = f"[{e['start']}] {e['icao']}\n            → clr {e['end']}\n"
+            line = f"[{e['start']}] {e['icao']}\n → clr {e['end']}\n"
             tag = "cleared"
         warn_log_st.insert("end", line, tag)
     warn_log_st.config(state="disabled")
@@ -348,10 +348,10 @@ def _clear_all():
 # random black/white every 80 ms — much more "thematic crash" than the
 # original plain-red overlay. Ported from Will's variant in
 # resources/importedcode/Importedgui/willdeathscreen.py.
-_PIXEL       = 15          # block size for B&W static
-_crash_items = []          # all canvas items in the overlay
-_crash_px    = []          # just the pixel rects (for animation updates)
-_static_job  = [None]      # tkinter `after` handle for the animation loop
+_PIXEL = 15 # block size for B&W static
+_crash_items = [] # all canvas items in the overlay
+_crash_px = [] # just the pixel rects (for animation updates)
+_static_job = [None] # tkinter `after` handle for the animation loop
 
 def _animate_static():
     """Re-roll the colour of every static pixel every 80 ms. Stops when
@@ -374,12 +374,12 @@ def _trigger_crash():
             px.append(canvas.create_rectangle(
                 col, row, col + _PIXEL, row + _PIXEL, fill=color, outline=""))
     # Centred LOST CONNECTION box on top.
-    bg  = canvas.create_rectangle(
+    bg = canvas.create_rectangle(
         W // 2 - 340, H // 2 - 55, W // 2 + 340, H // 2 + 55,
         fill="#000000", outline="#ffffff", width=3)
     txt = canvas.create_text(W // 2, H // 2, text="LOST CONNECTION",
                              fill="white", font=("Courier", 50, "bold"))
-    _crash_px    = px
+    _crash_px = px
     _crash_items = px + [bg, txt]
     _animate_static()
     # Belt-and-suspenders: auto-clear at the same 10 s horizon even if
@@ -397,7 +397,7 @@ def _clear_crash():
         except Exception:
             pass
     _crash_items = []
-    _crash_px    = []
+    _crash_px = []
 
 # ── Dot update ────────────────────────────────────────────────────────────────
 def handle_line(text):
@@ -416,23 +416,23 @@ def handle_line(text):
             # Phase 12 — controller-suggested diversion. Format from
             # codein.c: "WARN diversion ICAO=xxxxxx hdg_delta=N alt_delta=M"
             # Encoding mirrors send_ble_diversion() in collision.c:
-            #   ±30  hdg_delta = LEFT / RIGHT
-            #   ±100 hdg_delta = (reserved, currently unused)
-            #   +127 hdg_delta = RTB sentinel
-            #   -127 hdg_delta = HOLD sentinel (we no longer send this)
-            #   alt_delta ≠ 0  = CLIMB / DESCEND (hdg_delta = 0)
+            # ±30 hdg_delta = LEFT / RIGHT
+            # ±100 hdg_delta = (reserved, currently unused)
+            # +127 hdg_delta = RTB sentinel
+            # -127 hdg_delta = HOLD sentinel (we no longer send this)
+            # alt_delta ≠ 0 = CLIMB / DESCEND (hdg_delta = 0)
             import re
             hm = re.search(r"hdg_delta=(-?\d+)", clean)
             am = re.search(r"alt_delta=(-?\d+)", clean)
             hdg_v = int(hm.group(1)) if hm else 0
             alt_v = int(am.group(1)) if am else 0
-            if   hdg_v == +127:   label = "RETURN TO BASE"
-            elif hdg_v == -127:   label = "HOLD PATTERN"
-            elif alt_v >  0:      label = f"CLIMB {alt_v} ft"
-            elif alt_v <  0:      label = f"DESCEND {-alt_v} ft"
-            elif hdg_v >  0:      label = f"DIVERT RIGHT {hdg_v}°"
-            elif hdg_v <  0:      label = f"DIVERT LEFT {-hdg_v}°"
-            else:                 label = "DIVERSION (no-op)"
+            if hdg_v == +127: label = "RETURN TO BASE"
+            elif hdg_v == -127: label = "HOLD PATTERN"
+            elif alt_v > 0: label = f"CLIMB {alt_v} ft"
+            elif alt_v < 0: label = f"DESCEND {-alt_v} ft"
+            elif hdg_v > 0: label = f"DIVERT RIGHT {hdg_v}°"
+            elif hdg_v < 0: label = f"DIVERT LEFT {-hdg_v}°"
+            else: label = "DIVERSION (no-op)"
             root.after(0, lambda m=label: _trigger_diversion_sticky(m))
         elif "WARN msg" in clean:
             msg = clean.split("WARN msg", 1)[1].strip()

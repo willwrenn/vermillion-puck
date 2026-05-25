@@ -21,23 +21,23 @@ Then in another terminal run this simulator:
     python3 simulate.py --port /dev/ttyACM1
 
 Arguments:
-  --pattern  circle | straight        (default: circle)
-  --lat      start latitude  degrees  (default: -27.4975)
-  --lon      start longitude degrees  (default: 153.0137)
-  --alt      altitude metres          (default: 1000)
-  --speed    airspeed knots           (default: 60)
-  --heading  initial heading degrees  (default: 0, used by straight)
-  --radius   circle radius km         (default: 2.0)
-  --rate     updates per second       (default: 10)
-  --tcp      GUI TCP port             (default: 5005)
-  --port     serial port (overrides TCP)
+  --pattern circle | straight (default: circle)
+  --lat start latitude degrees (default: -27.4975)
+  --lon start longitude degrees (default: 153.0137)
+  --alt altitude metres (default: 1000)
+  --speed airspeed knots (default: 60)
+  --heading initial heading degrees (default: 0, used by straight)
+  --radius circle radius km (default: 2.0)
+  --rate updates per second (default: 10)
+  --tcp GUI TCP port (default: 5005)
+  --port serial port (overrides TCP)
 """
 
 import argparse, json, math, socket, time, sys
 import serial
 
-KTS_TO_MS  = 0.514444   # knots → m/s
-DEG_PER_M_LAT = 1.0 / 111_320.0   # degrees latitude per metre (approx)
+KTS_TO_MS = 0.514444 # knots → m/s
+DEG_PER_M_LAT = 1.0 / 111_320.0 # degrees latitude per metre (approx)
 
 
 def deg_per_m_lon(lat_deg):
@@ -46,16 +46,16 @@ def deg_per_m_lon(lat_deg):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Aircraft position simulator for simple_grid.py")
-    p.add_argument("--pattern",  default="circle",    choices=["circle", "straight"])
-    p.add_argument("--lat",      type=float, default=-27.4975)
-    p.add_argument("--lon",      type=float, default=153.0137)
-    p.add_argument("--alt",      type=float, default=1000.0,  help="altitude in metres")
-    p.add_argument("--speed",    type=float, default=60.0,    help="airspeed in knots")
-    p.add_argument("--heading",  type=float, default=0.0,     help="initial heading degrees")
-    p.add_argument("--radius",   type=float, default=2.0,     help="circle radius in km")
-    p.add_argument("--rate",     type=float, default=10.0,    help="updates per second")
-    p.add_argument("--tcp",      type=int,   default=5005,    help="GUI TCP port")
-    p.add_argument("--port",     default=None,                help="serial port e.g. /dev/ttyACM1")
+    p.add_argument("--pattern", default="circle", choices=["circle", "straight"])
+    p.add_argument("--lat", type=float, default=-27.4975)
+    p.add_argument("--lon", type=float, default=153.0137)
+    p.add_argument("--alt", type=float, default=1000.0, help="altitude in metres")
+    p.add_argument("--speed", type=float, default=60.0, help="airspeed in knots")
+    p.add_argument("--heading", type=float, default=0.0, help="initial heading degrees")
+    p.add_argument("--radius", type=float, default=2.0, help="circle radius in km")
+    p.add_argument("--rate", type=float, default=10.0, help="updates per second")
+    p.add_argument("--tcp", type=int, default=5005, help="GUI TCP port")
+    p.add_argument("--port", default=None, help="serial port e.g. /dev/ttyACM1")
     return p.parse_args()
 
 
@@ -101,15 +101,15 @@ def simulate_circle(args, send):
     radius_m = args.radius * 1000.0
     # angular rate so that circumference / speed = period
     # omega (rad/s) = speed / radius
-    omega = speed_ms / radius_m          # radians per second
+    omega = speed_ms / radius_m # radians per second
 
     lat = args.lat
     lon = args.lon
     alt = args.alt
-    dt  = 1.0 / args.rate
+    dt = 1.0 / args.rate
 
     # start at the northernmost point of the circle, heading east
-    angle = 0.0   # angle around circle in radians (0 = north, increases clockwise)
+    angle = 0.0 # angle around circle in radians (0 = north, increases clockwise)
 
     # centre of circle is south of start by radius
     centre_lat = lat - radius_m * DEG_PER_M_LAT
@@ -132,20 +132,20 @@ def simulate_circle(args, send):
             "heading": int(hdg),
         }
         send(json.dumps(pkt))
-        print(f"lat={pos_lat:.5f}  lon={pos_lon:.5f}  hdg={hdg:.1f}°  spd={args.speed}kt")
+        print(f"lat={pos_lat:.5f} lon={pos_lon:.5f} hdg={hdg:.1f}° spd={args.speed}kt")
 
-        angle += omega * dt   # advance around circle
+        angle += omega * dt # advance around circle
         time.sleep(dt)
 
 
 def simulate_straight(args, send):
     speed_ms = args.speed * KTS_TO_MS
-    hdg_rad  = math.radians(args.heading)
+    hdg_rad = math.radians(args.heading)
 
     lat = args.lat
     lon = args.lon
     alt = args.alt
-    dt  = 1.0 / args.rate
+    dt = 1.0 / args.rate
 
     # distance per tick in metres
     d_lat = speed_ms * dt * math.cos(hdg_rad) * DEG_PER_M_LAT
@@ -153,7 +153,7 @@ def simulate_straight(args, send):
 
     start_lat = lat
     start_lon = lon
-    MAX_DIST_M = 50_000.0   # wrap back after 50 km
+    MAX_DIST_M = 50_000.0 # wrap back after 50 km
 
     dist_m = 0.0
 
@@ -174,7 +174,7 @@ def simulate_straight(args, send):
             "heading": int(args.heading),
         }
         send(json.dumps(pkt))
-        print(f"lat={lat:.5f}  lon={lon:.5f}  hdg={args.heading:.0f}°  spd={args.speed}kt")
+        print(f"lat={lat:.5f} lon={lon:.5f} hdg={args.heading:.0f}° spd={args.speed}kt")
 
         time.sleep(dt)
 
@@ -183,8 +183,8 @@ def main():
     args = parse_args()
     send = open_output(args)
 
-    print(f"Pattern: {args.pattern}  speed: {args.speed} kt  "
-          f"alt: {args.alt} m  rate: {args.rate} Hz")
+    print(f"Pattern: {args.pattern} speed: {args.speed} kt "
+          f"alt: {args.alt} m rate: {args.rate} Hz")
 
     try:
         if args.pattern == "circle":

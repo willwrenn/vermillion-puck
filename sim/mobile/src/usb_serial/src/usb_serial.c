@@ -9,13 +9,13 @@
 LOG_MODULE_REGISTER(usb_serial, LOG_LEVEL_INF);
 
 // ttyACM0 (board_cdc_acm_uart) — shell + logs, assigned via board DTSI
-//   zephyr,console = &board_cdc_acm_uart
-//   zephyr,shell-uart = &board_cdc_acm_uart
+// zephyr,console = &board_cdc_acm_uart
+// zephyr,shell-uart = &board_cdc_acm_uart
 //
 // ttyACM1 (cdc_acm_uart0) — data-only port defined in app.overlay.
-//   JSON position packets are written here directly via uart_poll_out,
-//   bypassing the shell/log backend entirely. ttyACM0 sees no JSON;
-//   ttyACM1 sees no shell noise or ANSI codes.
+// JSON position packets are written here directly via uart_poll_out,
+// bypassing the shell/log backend entirely. ttyACM0 sees no JSON;
+// ttyACM1 sees no shell noise or ANSI codes.
 static const struct device *g_data_uart =
 	DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1));
 
