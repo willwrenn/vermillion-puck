@@ -1,10 +1,10 @@
-# SkyWatch ATC — CSSE4011 final project
+# CSSE4011 Final Project — SkyWatch ATC
 
-Miniature air-traffic-control demo running on two Xiao-nRF52840 boards
-(Zephyr RTOS) plus a PyQt6 host GUI. Real ADS-B aircraft from an
-SDR (optional) are fused live with a BLE-driven simulated aircraft;
-collision detection, guided-missile sandbox, MQTT/InfluxDB sidecars,
-and a Tk "LOST CONNECTION" death screen on the sim side.
+## Overview
+- **Sim mobile node** — Xiao-nRF52840 BLE peripheral, broadcasts its own aircraft position (lat/lon/alt/spd/hdg) over a custom GATT NOTIFY characteristic. Driven by wasd-style shell commands from a PC terminal, or auto-circles via `aircraft circle <kt> <m>`.
+- **Controller node** — Xiao-nRF52840 BLE central, connects to the sim, also ingests real ADS-B JSON from dump1090 over USB-CDC, fuses both sources into a per-aircraft Kalman filter, runs a pairwise closest-approach collision detector at 5 Hz (ADVISORY/WARNING/CRASH levels), fires BLE diversion suggestions back to the sim, plus a pure-pursuit guided-missile sandbox.
+- **PC (controller side)** — PyQt6 ATC GUI (`controller/host/atc_gui.py`) reads the JSON stream, plots aircraft on a Brisbane basemap with per-ICAO colours, runs a live collision-history dashboard, mirror-publishes events to MQTT + InfluxDB Cloud.
+- **PC (sim side)** — tkinter GUI (`sim/pc/simple_grid.py`) shows the sim aircraft on a Brisbane background, flashes a CRASH overlay when it dies.
 
 ```
    SDR (NESDR + dump1090)                Sim mobile (Xiao + Zephyr)
@@ -24,443 +24,395 @@ and a Tk "LOST CONNECTION" death screen on the sim side.
                                        ├─ MQTT publish → Mosquitto
                                        └─ InfluxDB Cloud writes → dashboard
    sim/pc/simple_grid.py (tkinter)
-        ▲ JSON + WARN lines over USB-CDC ttyACM3 (sim data port)
+        ▲ JSON + WARN lines over USB-CDC ttyACM0 (sim — single port,
+        │                                          shell + data multiplexed)
         └─ Brisbane map + position trail + DIVERSION panel +
            full-screen TV-static "LOST CONNECTION" overlay on CRASH
-   screen /dev/ttyACM2 → aircraft circle / set / wasd / reset (sim shell)
 ```
 
-Repo layout (only what's tracked):
+Map bounds default to ±0.5° around Brisbane (-27.4975, 153.0137). Origin "St Lucia" used for `aircraft reset` and as the missile launch site.
 
-```
-vermillion-puck/
-├── controller/                Zephyr controller firmware + host GUI
-│   ├── CMakeLists.txt
-│   ├── prj.conf
-│   ├── app.overlay            Dual cdc_acm_uart{0,1}
-│   ├── src/
-│   │   ├── main/              Entry + heartbeat LED
-│   │   ├── shell/             `skywatch ...` subcommand tree on ACM0
-│   │   ├── usb_device, usb_serial, usb_handler
-│   │   ├── json/              Zephyr JSON parser
-│   │   ├── ble/               BLE central + GATT discovery + warning Tx
-│   │   ├── bridge/            BLE frame → aircraft_db
-│   │   ├── aircraft_db/       slist DB + stale reaper + per-a/c KF
-│   │   ├── db_publisher/      2 Hz snapshot → ACM1 JSON
-│   │   ├── kalman/            4D constant-velocity Kalman filter
-│   │   ├── collision/         pairwise CA detector + CRASH + diversion
-│   │   ├── missile/           pure-pursuit guided FICT aircraft
-│   │   └── common/            shared headers (aircraft_t, ble_packet)
-│   └── host/
-│       ├── atc_gui.py         PyQt6 ATC GUI (~1300 lines)
-│       ├── mqtt_publisher.py  paho-mqtt background thread
-│       ├── influx_writer.py   InfluxDB Cloud background thread
-│       ├── run_skywatch.sh    One-shot launcher (this is what you run)
-│       ├── assets/            Brisbane greyscale basemap PNG
-│       └── scripts/
-│           ├── test_pipeline.py  Synthetic CollisionFrame burst (Phase 10 verify)
-│           └── SETUP.md          Mosquitto + InfluxDB dashboard recipe
-├── sim/                       Will's sim mobile + tkinter PC GUI
-│   ├── mobile/                Zephyr firmware (BLE peripheral)
-│   └── pc/
-│       ├── simple_grid.py     tkinter map GUI for the sim aircraft
-│       ├── staticmap.jpeg     Brisbane background image
-│       └── run_dashboard.sh
-├── resources/standards/       Wire-format specs — single source of truth
-│   ├── json_protocol.{md,py}    AircraftFrame + CollisionFrame schema
-│   │                            (the .py is the runtime validator the GUI
-│   │                            imports — DO NOT delete or the GUI won't start)
-│   ├── ble_protocol.md          BLE GATT services + frame layouts
-│   └── fusion.md                ADS-B + BLE fusion design notes
-└── POSTER_FINAL_PROJECT.pptx  Presentation poster (final submission)
-```
+# Setup
 
----
+## General Flash instructions
+1. Build the relevant subsystem to its `/build` folder.
 
-## Prerequisites (host)
+2. Plug board into USB.
+3. From Admin PowerShell run `usbipd list` to find the busid `x-y`.
+4. Attach to WSL: `usbipd attach --wsl --busid x-y`.
 
+5. Double-tap reset on the board. XIAO-SENSE drive should mount under `/media/$USER/`. Then drag-drop the UF2 (or use `west flash`):
+
+CONTROLLER:
 ```bash
-sudo apt install -y mosquitto mosquitto-clients socat   # optional: MQTT
-sudo systemctl enable --now mosquitto                   # ditto
-pip install --break-system-packages \
-    pyserial PyQt6 requests paho-mqtt influxdb-client Pillow
+west build -p -b xiao_ble/nrf52840/sense -d firmware/finalproject/vermillion-puck/controller/build firmware/finalproject/vermillion-puck/controller
+west flash --runner uf2 -d firmware/finalproject/vermillion-puck/controller/build
 ```
 
-Zephyr toolchain (controller + sim firmware): standard `west` setup
-with the Zephyr SDK. Boards: **`xiao_ble/nrf52840/sense`** for both.
-
----
-
-## Build the firmware
-
+SIM:
 ```bash
-# from your zephyr workspace, with zephyr-env.sh sourced:
-west build -b xiao_ble/nrf52840/sense -d <build-dir>/controller \
-    <path-to>/vermillion-puck/controller
-west build -b xiao_ble/nrf52840/sense -d <build-dir>/sim \
-    <path-to>/vermillion-puck/sim/mobile
+west build -p -b xiao_ble/nrf52840/sense -d firmware/finalproject/vermillion-puck/sim/mobile/build firmware/finalproject/vermillion-puck/sim/mobile
+west flash --runner uf2 -d firmware/finalproject/vermillion-puck/sim/mobile/build
 ```
 
-Outputs: `<build-dir>/.../zephyr/zephyr.uf2` for each.
+6. Wait for green LED on the controller — solid + slow blink = healthy. Sim has no heartbeat LED but its red LED flashes on incoming warnings.
+7. **Flash one board at a time** — both boards mount as XIAO-SENSE so you can't tell them apart in bootloader mode.
+8. After flash, board often falls off WSL — `usbipd attach` again. If you need PuTTY, find the COM port in Windows Device Manager and use serial mode at 115200.
 
-Sizes (current release): controller ~234 KB FLASH / 94 KB RAM; sim mobile
-~195 KB FLASH / 76 KB RAM. Both well within the Xiao's 788 KB / 256 KB.
+## Controller Node Setup (Laptop A)
+1. Follow general flash for controller, leave attached to Laptop A.
+2. `ls /dev/ttyACM*` in WSL — you should see ACM0 (shell) + ACM1 (data). With only the controller plugged in there'll be exactly two ports.
+3. `screen /dev/ttyACM0 115200` to get the `uart:~$` prompt. Press Enter once.
+4. Head to PC GUI section to launch the visual side (`atc_gui.py` runs on Laptop A reading ACM1).
 
----
+## Sim Mobile Node (Laptop B)
+1. Follow general flash for sim. Can run off USB battery for portability — though for the demo we keep it plugged into Laptop B so the sim shell + tkinter GUI are reachable.
+2. Sim auto-advertises as `skywatch-mobile` over BLE — the controller (Laptop A) auto-discovers and connects. **From Laptop A's controller shell (`screen /dev/ttyACM0`):**
 
-## Flash
-
-Each Xiao enters the **Adafruit UF2 bootloader** on **double-tap reset**.
-A `XIAO-SENSE` mass-storage volume mounts; drop the `.uf2` in and the
-board reboots into the new firmware.
-
-```bash
-# Controller:
-cp <build-dir>/controller/zephyr/zephyr.uf2 /media/<user>/XIAO-SENSE/ && sync
-# Sim mobile (separately — both boards mount as XIAO-SENSE, so flash one at a time):
-cp <build-dir>/sim/zephyr/zephyr.uf2 /media/<user>/XIAO-SENSE/ && sync
+```
+skywatch ble stats
 ```
 
-After flash the board re-enumerates with VID **`2fe3:0005`** (Zephyr CDC).
-**Green LED** solid + slow-blinking = controller's main loop is healthy.
+Should show `connected=yes` once the sim is in range. If not, give it ~2 s — the auto-reconnect watchdog scans every 2 s. Range is line-of-sight ~10 m with the on-PCB antennas; both laptops can be on the same desk.
 
----
+3. **From Laptop B**, verify sim is sending position via `screen /dev/ttyACM0 115200` (sim's shell + data port — single port on the sim laptop). You should see:
 
-## Run the GUI
-
-Two boards yields four `/dev/ttyACMn` ports. Standard mapping after a
-clean attach:
-
-| Port | Board | Role |
-|---|---|---|
-| `/dev/ttyACM0` | Controller | shell — `skywatch ...` commands |
-| `/dev/ttyACM1` | Controller | data — JSON aircraft + collision frames |
-| `/dev/ttyACM2` | Sim mobile | shell — `aircraft ...` commands |
-| `/dev/ttyACM3` | Sim mobile | data — JSON position + WARN lines |
-
-(Numbers shift each time a board re-enumerates — identify by sniffing output.)
-
-### Launch options
-
-**Full demo with SDR** (requires dump1090 running on the host + your own
-copy of `sdr_bridge.py` — see `SDR_BRIDGE_PY` env var):
-
-```bash
-bash controller/host/run_skywatch.sh
+```json
+{"lat":-274975000,"lon":1530137000,"alt":100,"spd":0,"hdg":0}
 ```
 
-**Controller + sim only, no SDR antenna**:
+## PC GUI
+
+### Controller GUI (PyQt6 — our side)
+From the repo root:
 
 ```bash
 bash controller/host/run_skywatch.sh --no-sdr
 ```
 
-**Manual launch** (no helper script):
+`--no-sdr` skips the dump1090 reachability check. Drop the flag if you have the SDR antenna + dump1090 running. The script auto-detects the data port (override with `SKYWATCH_PORT=/dev/ttyACMn`), spawns the SDR bridge if `SDR_BRIDGE_PY` is exported, then launches `atc_gui.py`.
+
+Mouse-wheel zoom, click an aircraft to track it, `0` to reset view. Bottom status bar shows lines-in / parse-err / schema-err counters.
+
+### Sim GUI (tkinter — Will's side, on Laptop B)
 
 ```bash
-python3 controller/host/atc_gui.py --port /dev/ttyACM1
+cd sim/pc
+python3 simple_grid.py --port /dev/ttyACM0 --map staticmap.jpeg
 ```
 
-**Sim GUI** (separate terminal):
+Aircraft shows as a red dot with a position trail. On CRASH the whole window fills with TV-static "LOST CONNECTION" for 10 s, then auto-clears once the sim respawns at St Lucia.
+
+(If you're running both boards on a single laptop, the sim port is `ACM2` instead — see the two-laptop note below.)
+
+### Two-laptop demo layout
+
+For the marker demo we run **one laptop per board** — keeps the USB / WSL stuff dead simple and means each side only ever sees its own board's two CDC ports.
+
+**Laptop A (controller node — Blaise's):**
+| Port | What it does |
+|------|--------------|
+| `/dev/ttyACM0` | Controller Zephyr shell + log backend |
+| `/dev/ttyACM1` | Controller JSON data port (aircraft + collision frames) — what `atc_gui.py` reads |
+
+**Laptop B (sim node — Will's):**
+| Port | What it does |
+|------|--------------|
+| `/dev/ttyACM0` | Sim Zephyr shell + position JSON output multiplexed on the same port — `simple_grid.py` reads it, `aircraft ...` commands go to it |
+
+Note the ACM0/ACM1 numbering is local to each laptop. If you happen to run both on the same laptop (dev mode), the sim port gets pushed to ACM2 — see the bottom of this file for that case.
+
+The two laptops talk over **BLE only** between the boards — no networking between laptops needed. The host PCs are independent: each runs its own GUI against its own board.
+
+WSL renumbers ports after every flash. If unsure: `timeout 2 head -c 200 /dev/ttyACMn` and see what's coming out.
+
+### Sim aircraft helper functions (Laptop B)
+Paste once per terminal session **on Laptop B**:
 
 ```bash
-cd sim/pc && python3 simple_grid.py --port /dev/ttyACM3 --map staticmap.jpeg
+function ac()     { echo -e "aircraft $*\r"        > /dev/ttyACM0; }
+function circle() { echo -e "aircraft circle $*\r" > /dev/ttyACM0; }
 ```
 
-**Sim aircraft control** — open the sim shell:
+Then `ac wasd w`, `ac wasd d`, `circle 80 800`, `ac reset`, etc.
 
-```bash
-screen /dev/ttyACM2 115200
-# press Enter to get the uart:~$ prompt, then type aircraft commands directly
-```
+(If you run sim + controller on the same laptop, sim shell ends up on
+`/dev/ttyACM2` instead of `ACM0` — adjust the helpers accordingly.)
 
-#### Position + flight parameters
+# Operation
 
-```bash
-ac set <lat_e7> <lon_e7> <alt_m> <speed_kt> <heading_deg>
-```
+## 5. Useful Shell Commands (controller node)
 
-| Parameter | Unit | Example |
-|---|---|---|
-| `lat_e7` | degrees × 1e7 | `-274975000` |
-| `lon_e7` | degrees × 1e7 | `1530137000` |
-| `alt_m` | metres | `500` |
-| `speed_kt` | knots | `60` |
-| `heading_deg` | degrees 0–359 | `90` |
+| Command | What it does |
+|---------|-------------|
+| `skywatch ping` | Reply `pong` (liveness check) |
+| `skywatch ble stats` | Connection state + scan/discovery counters |
+| `skywatch db dump` | List all aircraft in the DB |
+| `skywatch collision stats` | Tick + pair count + advisory/warning counters |
+| `skywatch collision inject` | Spawn two synthetic FICT aircraft converging head-on (no BLE needed) |
+| `skywatch collision crash <icao_a> <icao_b>` | Force-fire a CRASH event between two ICAOs already in the DB |
+| `skywatch collision stop` | Halt the inject keep-alive |
+| `skywatch collision ghost [tca_s] [miss_m] [alt_ft]` | Spawn FICT aircraft on intercept with the BLE sim (default 23 s TCA, 0 m miss, alt-match) |
+| `skywatch collision ghost_at <icao> [tca_s] [miss_m] [alt_ft]` | Same but target any ICAO (BLE / ADS-B / FICT) |
+| `skywatch collision ghost_stop` | Cancel current ghost |
+| `skywatch missile launch [ttl_s] [turn_rate_dps] [speed_kt]` | Launch a pure-pursuit missile from UQ St Lucia at the BLE sim (default 60 s / 15°/s / 500 kt) |
+| `skywatch missile cancel` | Abort the in-flight missile |
+| `skywatch diversion <left\|right\|climb\|descend\|rtb\|hold>` | Manually fire a diversion suggestion to the sim |
+| `skywatch kalman q <m/s²>` | Tune Kalman process noise (default 0.5) |
+| `skywatch kalman r <m>` | Tune Kalman measurement noise (default 10) |
+| `skywatch kalman bench` | 1000 predict+update iterations, <5 ms target |
+| `skywatch usb stats` | Data-port Rx counters (bytes, frames, ringbuf drops) |
 
-```bash
-ac set -274975000 1530137000 500 60 90   # St Lucia, 500 m, 60 kt heading east
-```
+## 5b. Useful Shell Commands (sim node)
 
-#### WASD nudge
-
-```bash
-ac wasd w    # speed +10 kt
-ac wasd s    # speed -10 kt
-ac wasd a    # heading -10°
-ac wasd d    # heading +10°
-ac wasd q    # altitude +50 m
-ac wasd e    # altitude -50 m
-```
-
-#### Circle mode
-
-```bash
-circle 60 1000     # 60 kt, 1000 m radius
-circle 120 3000    # 120 kt, 3 km radius (wider turns)
-circle 60 300      # 60 kt, 300 m radius (tight)
-circle 0           # stop circling, hold current heading
-```
-
-#### Other
-
-```bash
-ac reset             # snap back to St Lucia, zero speed
-ac status            # print current position as JSON
-```
-
----
-
-## Test (live demo scenarios)
-
-All from the **controller shell** — open it with:
-
-```bash
-screen /dev/ttyACM0 115200
-# press Enter to get the `uart:~$` prompt
-```
-
-### Collision tests (no SDR / no sim needed)
-
-```text
-skywatch collision inject               # spawn c011a1 + c011b2 converging @ 250 kt
-                                        # → ~25 s later they collide
-                                        # → yellow ADVISORY → red WARNING → dark-red CRASHED
-skywatch collision stop                 # halt the keep-alive
-skywatch collision crash c011a1 c011b2  # manual CRASH override on any pair in the DB
-```
-
-### Collision tests (with the BLE sim)
-
-```text
-skywatch collision ghost 30 800 -1      # ADVISORY @ 800 m, 30 s TCA
-skywatch collision ghost 20 150 -1      # WARNING @ 150 m
-skywatch collision ghost 15 0   -1      # direct CRASH
-skywatch collision ghost_stop
-
-# Or target any other aircraft (BLE / ADS-B / FICT) by ICAO:
-skywatch db dump                        # list ICAOs in the DB
-skywatch collision ghost_at <icao> [tca_s] [miss_m] [alt_ft]
-```
-
-### Missile sandbox (needs the BLE sim)
-
-```text
-skywatch missile launch 60 6 300        # SLOW — easy to dodge (60s TTL, 6°/s turn, 300 kt)
-skywatch missile launch 60 15 500       # MED  — defaults
-skywatch missile launch 30 25 750       # HARD — Will basically must climb to escape
-skywatch missile cancel                 # abort
-```
-
-### Diversion suggestions (manual)
-
-```text
-skywatch diversion left | right | climb | descend | rtb | hold
-# → Sim's Tk GUI shows orange DIVERSION panel + suggested manoeuvre.
-# (Diversion also auto-fires on any ADVISORY-level encounter.)
-```
-
-### Filter + DB inspection
-
-```text
-skywatch ble stats          # BLE central state + scan/connect counters
-skywatch db dump            # current aircraft DB (live)
-skywatch kalman bench       # 1000 predict+update iterations (target <5 ms)
-skywatch kalman show        # current process/measurement noise (q, r)
-skywatch collision stats    # ticks / pairs checked / advisories / warnings
-```
-
----
+| Command | What it does |
+|---------|-------------|
+| `aircraft status` | Print current lat/lon/alt/heading/speed |
+| `aircraft reset` | Snap back to St Lucia origin (also clears warnings) |
+| `aircraft wasd w` | +10 kt |
+| `aircraft wasd s` | -10 kt |
+| `aircraft wasd a` | -10° (left turn) |
+| `aircraft wasd d` | +10° (right turn) |
+| `aircraft wasd q` | +50 m altitude |
+| `aircraft wasd e` | -50 m altitude |
+| `aircraft set <lat_e7> <lon_e7> <alt_m> <kt> <hdg>` | Set exact state (lat/lon × 1e7) |
+| `aircraft circle <kt> <radius_m>` | Auto-fly circles (0 to stop) |
 
 ## BLE Frame Format
 
-Sim mobile → controller over GATT NOTIFY (`ble_aircraft_frame`, defined in `sim/mobile/src/common/src/ble_packet.h`):
+Sim mobile → controller, over GATT NOTIFY (`ble_aircraft_frame`, defined
+in `sim/mobile/src/common/src/ble_packet.h`):
 
 | Field | Type | Notes |
 |---|---|---|
 | `source` | uint8 | `1` = BLE_SRC_BLE_SIM |
-| `flags` | uint8 | ALT_VALID, VEL_VALID, HDG_VALID |
+| `flags` | uint8 | ALT_VALID / VEL_VALID / HDG_VALID bitfield |
 | `icao24` | uint32 LE | Low 24 bits |
 | `lat` | float64 LE | WGS-84 degrees |
 | `lon` | float64 LE | WGS-84 degrees |
-| `alt_ft` | int16 LE | Altitude in **feet** MSL |
+| `alt_ft` | int16 LE | Altitude in feet MSL |
 | `vel_kt` | int16 LE | Ground speed in knots |
 | `hdg_deg` | int16 LE | Heading degrees true 0–359 |
 | `ts_ms` | uint32 LE | ms since boot |
 
-Frame size: **38 bytes**. Update rate: **5 Hz**.
+Frame size: 38 bytes. Update rate: 5 Hz.
 
-> `alt_ft` is feet. Shell commands (`ac set`, `ac wasd q/e`) use metres — firmware converts on send (metres × 3.28084).
+Note that `alt_ft` is in feet on the wire; the shell `aircraft set` /
+`aircraft wasd q/e` commands take metres and the firmware converts on
+send (× 3.28084).
 
----
+Controller → sim mobile uses a separate `ble_warn_frame` with
+`msg_type` bytes for collision (0x02), diversion (0x03), free-text
+(0x04), and crash (0x05). See `controller/src/common/src/ble_packet.h`.
 
-## GUI Map Bounds
+## Zephyr Files Referencing
 
-Both GUIs cover the greater Brisbane area:
+WATCHDOG
+- We use `task_wdt` like the miniproject —
+- HW_STACK_PROTECTION enabled via MPU, which catches stack overflows the watchdog wouldn't.
 
-| Corner | Latitude | Longitude |
-|---|---|---|
-| Top-left | -27.34° | 152.83° |
-| Bottom-right | -27.535° | 153.21° |
+USB/UART
+- `zephyr/samples/subsys/usb/cdc_acm` — for the dual CDC ACM device tree pattern.
+- `zephyr/samples/drivers/uart` — for the poll-out byte path.
 
----
+BLUETOOTH
+- `zephyr/samples/bluetooth/central_hr/src/main.c` — central role + GATT discovery shape.
+- `zephyr/samples/bluetooth/peripheral/src/main.c` — sim side advertising loop.
+- `zephyr/samples/bluetooth/mtu_update/central/src/central_mtu_update.c` — needed for ATT MTU bump (our position frames don't fit the default 23 B MTU).
+- `zephyr/samples/bluetooth/mtu_update/peripheral/src/peripheral_mtu_update.c` — sim peripheral side of the MTU bump.
 
-## Optional — InfluxDB Cloud dashboard
+SHELL
+- `zephyr/samples/subsys/shell/shell_module` — for the `SHELL_STATIC_SUBCMD_SET_CREATE` nested-tree pattern we use for `skywatch <subcmd> [args]`.
 
-`run_skywatch.sh` exports the InfluxDB credentials automatically. The
-PyQt GUI's `influx_writer.py` writes every CollisionFrame to bucket
-`skywatch` (measurement `skywatch_events`) with tags `pair / level /
-icao_a / icao_b` and fields `tca_s / min_sep_m / actual_sep_m /
-alt_diff_ft / controller_ts`. Build a dashboard in InfluxDB Cloud UI
-(SQL on Serverless or Flux on TSM) — see `resources/handover.md` in
-the host workspace for ready-to-paste queries.
+JSON
+- `zephyr/samples/subsys/lib/json` — for the JSON_OBJ_DESCR + json_obj_parse pattern we use to parse ADS-B frames coming off ttyACM1.
 
----
+# Libraries Used
 
-## Optional — MQTT live monitor
+### FIRMWARE (Standard)
+#### math.h
+- `sin()`, `cos()`, `atan2()` — bearing math for missile pursuit + diversion picker.
+- `sqrt()`, `fabs()` — closest-approach geometry (`|Δr + Δv·t*|`).
+- `cos(lat*π/180)` — metres-per-degree-longitude scaling for lat/lon ↔ metric.
+- `fmod()` — angle wrap.
+- `isfinite()` — guard against NaN/Inf TCA when relative velocity is zero.
 
-```bash
-mosquitto_sub -t 'skywatch/#' -v
-# → live stream of every collision frame as the controller emits it.
-```
+#### string.h
+- `memcpy()`, `memset()` — clearing snap rows + Kalman matrices each tick.
+- `strncpy()`, `strncmp()` — ICAO copy + lookup (always BUF_LEN-1 + explicit NUL after Phase 12 strncpy fix).
 
-Topics: `skywatch/collision` (every frame) + `skywatch/collision/{pair}`
-(per-pair retained) + `skywatch/status` (online / offline last-will).
+#### stdlib.h
+- `strtod()`, `strtol()` — shell arg parsing for `skywatch collision ghost [tca_s] [miss_m]` etc.
+- `abs()` — signed altitude diff.
 
----
+#### stdio.h
+- `snprintf()` — JSON serialisation for the data port.
 
-## Running on a second laptop from scratch (e.g. Will's machine)
+#### stdbool.h / stdint.h
+- Standard integer + boolean types throughout.
 
-Everything you need is in this repo. Assuming you have **both** Xiao
-boards + a Linux/WSL host with Zephyr SDK + Python 3.10+:
+### FIRMWARE (Zephyr)
+- `zephyr/kernel.h` — `K_THREAD_DEFINE`, `k_work_delayable` for periodic collision/missile/ghost timers, `k_mutex` for the aircraft_db, `K_SPINLOCK` for stats counters across the ISR/work-queue boundary, `k_uptime_get()` for wall-clock ms.
+- `zephyr/sys/slist.h` — `sys_slist_t` + `sys_slist_for_each_container()` for the aircraft_db linked list.
+- `zephyr/logging/log.h` — `LOG_INF` / `LOG_WRN` / `LOG_DBG` per-module logging.
+- `zephyr/bluetooth/bluetooth.h` — `bt_enable()`, scanning, address parsing.
+- `zephyr/bluetooth/conn.h` — `bt_conn_le_create()` + connection callbacks for the central role.
+- `zephyr/bluetooth/gatt.h` — `bt_gatt_discover()`, `bt_gatt_subscribe()`, `bt_gatt_write_without_response()` for the two-stage discovery (SkyWatch service for NOTIFY, Warning service for WRITE).
+- `zephyr/bluetooth/hci.h` — disconnect reason constants.
+- `zephyr/bluetooth/uuid.h` — `BT_UUID_INIT_128()` for both custom services.
+- `zephyr/data/json.h` — `json_obj_parse` for the ADS-B ingest path.
+- `zephyr/shell/shell.h` — `SHELL_CMD_REGISTER`, `SHELL_STATIC_SUBCMD_SET_CREATE`, `shell_print` for the `skywatch ...` tree.
+- `zephyr/usb/usbd.h` — `USBD_DEVICE_DEFINE` + manual usbd_add_configuration for dual CDC ACM (we control enumeration order so ACM0 = shell + ACM1 = data deterministically).
+- `zephyr/drivers/uart.h` — `uart_poll_out`, `uart_line_ctrl_get` for DTR detection on the data port.
+- `zephyr/drivers/gpio.h` — `gpio_dt_spec`, `gpio_pin_configure_dt`, `gpio_pin_toggle_dt` for the heartbeat LED.
+- `zephyr/device.h` — `DEVICE_DT_GET` + `device_is_ready` for the data UART.
+- `zephyr/init.h` — `SYS_INIT` priority chain for USB device → app threads ordering.
 
-```bash
-# 1. Clone:
-git clone https://github.com/willwrenn/vermillion-puck.git
-cd vermillion-puck
+### HOST (Python)
+- PyQt6 — main ATC GUI (QGraphicsScene for the map, QTableWidget for the aircraft + collision-history dashboards).
+- tkinter — sim PC GUI (`simple_grid.py`).
+- pyserial — both GUIs read CDC-ACM JSON via this.
+- paho-mqtt — collision-event publish to Mosquitto.
+- influxdb-client — collision-event writes to InfluxDB Cloud (HTTPS REST).
+- Pillow (PIL) — Brisbane basemap PNG decode for both GUIs.
+- requests — sdr_bridge.py pulls dump1090 over HTTP.
+- collections.deque — per-aircraft position trail buffer (50 points, alpha-fade).
+- json, threading, queue — frame dispatcher + background-thread fan-out.
+- math, hashlib, re — geometry math + per-ICAO hash colour assignment + log line parsing.
 
-# 2. Host deps (one-time):
-sudo apt install -y mosquitto mosquitto-clients
-sudo systemctl enable --now mosquitto
-pip install --break-system-packages \
-    pyserial PyQt6 requests paho-mqtt influxdb-client Pillow
+## Zephyr References
 
-# 3. Build both firmwares (with zephyr-env.sh sourced):
-west build -b xiao_ble/nrf52840/sense -d /tmp/sw/controller controller
-west build -b xiao_ble/nrf52840/sense -d /tmp/sw/sim        sim/mobile
+### BLE
+- https://docs.zephyrproject.org/latest/connectivity/bluetooth/index.html
+- https://docs.zephyrproject.org/latest/connectivity/bluetooth/api/gatt.html
+- https://docs.zephyrproject.org/latest/samples/bluetooth/central_hr/README.html
+- https://docs.zephyrproject.org/latest/samples/bluetooth/peripheral/README.html
+- https://docs.zephyrproject.org/latest/samples/bluetooth/mtu_update/README.html
 
-# 4. Flash — ONE AT A TIME (both boards mount as XIAO-SENSE in
-#    bootloader). Double-tap reset on the target board → drag-drop:
-cp /tmp/sw/controller/zephyr/zephyr.uf2 /media/$USER/XIAO-SENSE/ && sync
-# (wait for green LED, then double-tap reset on the OTHER board)
-cp /tmp/sw/sim/zephyr/zephyr.uf2        /media/$USER/XIAO-SENSE/ && sync
+### SHELL
+- https://docs.zephyrproject.org/latest/services/shell/index.html
 
-# 5. Sanity-check the host pipeline WITHOUT firmware running:
-source <(grep '^export INFLUXDB' controller/host/run_skywatch.sh)
-python3 controller/host/scripts/test_pipeline.py
-# → 6 synthetic CollisionFrames go to MQTT (broker) + InfluxDB.
-# → Confirm by: mosquitto_sub -t 'skywatch/#' -v
-# → And in InfluxDB Cloud Data Explorer:
-#   SELECT * FROM "skywatch_events" WHERE time >= now() - interval '5 minutes'
+### LOGGING
+- https://docs.zephyrproject.org/latest/services/logging/index.html
 
-# 6. Run the full stack in four terminals:
-#    A — our PyQt ATC GUI (close window or Ctrl-C to quit):
-bash controller/host/run_skywatch.sh --no-sdr
-#    B — controller's Zephyr shell (for `skywatch ...` commands):
-screen /dev/ttyACM0 115200
-#    C — your tkinter sim GUI:
-cd sim/pc && python3 simple_grid.py --port /dev/ttyACM3 --map staticmap.jpeg
-#    D — sim aircraft control (Zephyr shell on ACM2):
-screen /dev/ttyACM2 115200
-```
+### JSON
+- https://docs.zephyrproject.org/latest/services/serialization/json.html
 
-That's the whole bring-up. From here, drive the scenarios in §**Test**
-above. **No external scripts or out-of-repo dependencies required.**
+### USB
+- https://docs.zephyrproject.org/latest/connectivity/usb/device/usb_device.html
 
-WSL note: boards have to be `usbipd attach --wsl --busid X-Y`'d from
-Windows-side Admin PowerShell before WSL sees them as /dev/ttyACM*.
-If a board drops off WSL after a bootloader excursion, re-attach.
+### MESSAGE QUEUE / WORK QUEUES
+- https://docs.zephyrproject.org/latest/kernel/services/data_passing/message_queues.html
+- https://docs.zephyrproject.org/latest/kernel/services/threads/workqueue.html
 
----
+### UART
+- https://docs.zephyrproject.org/latest/hardware/peripherals/uart.html
 
-## Project status
+### GPIO
+- https://docs.zephyrproject.org/latest/hardware/peripherals/gpio.html
 
-Phases 1–12 complete, builds clean, all scenarios above demoed live.
+## Self References
+Used the miniproject Kalman filter design + node_db slist pattern + dual-CDC ACM device setup pretty heavily — we ported all of those forward into this project. Shell command structure also lifted from miniproject's base node.
 
-The Phase 9 IMM Kalman experiment (CV + coordinated-turn filters
-blended via Markov mixing, exposed as a `skywatch imm on|off` runtime
-toggle) was prototyped, C-ported, and verified to beat pure-CV by
-~16× RMSE on a synthetic 90° turn track. We removed it during live
-testing — on real ADS-B traffic the IMM's curved predictions were
-*less* accurate than pure-CV (commercial aircraft fly straighter than
-the CT model assumes), and the extra ~14 KB of per-aircraft RAM
-wasn't worth keeping for a dormant feature. The CV-only Kalman from
-Phase 7 is the production predictor; see `git log` for the design +
-reversion commits.
+## External References
 
----
+- ADS-B / Mode-S  for understanding what dump1090 actually decodes off the SDR before it gets to us.
+- dump1090  JSON aircraft endpoint format — for the bridge script's parser.
+- CartoDB Positron tile server — for the greyscale Brisbane basemap (bake script in `scripts/stage6/fetch_basemap.py` of the host workspace).
 
-## Hardware
 
-- 2× Seeed **Xiao nRF52840 Sense** (one controller, one sim).
-- 1× NESDR / RTL-SDR USB dongle (optional, real ADS-B input).
-- Host laptop running Linux / WSL with Zephyr SDK + Python 3.10+.
+## AI Referencing
 
-## References
+### controller/src/main/main.c
+- Helped structure the boot-init priority chain (USB → DB → handlers → bridge → BLE → publisher → collision) and the heartbeat LED toggle in the main loop.
 
-### Zephyr RTOS examples used
+### controller/src/shell/shell.c
+- Built the nested subcommand structure (`skywatch ...` → seven subcommand groups).
+- Helped with `strtod`/`atoi` arg parsing for the ghost / missile / diversion commands.
+- Wrote the `imm_dump_cb` style iterator pattern (later removed when IMM was reverted).
+- Suggested splitting `inject` / `inject_stop` rather than reusing arg parsing.
 
-The following Zephyr samples were used as structural references during development.
-All are located under `zephyr/samples/bluetooth/` in the Zephyr SDK.
+### controller/src/ble/ble_central.c
+- Designed the two-stage GATT discovery (SkyWatch service for NOTIFY then Warning service for WRITE), since the controller is BOTH a consumer and a producer over BLE.
+- Wrote the MTU exchange + the watchdog auto-reconnect scan loop.
+- Helped debug the connection_create error code handling.
+- `ble_central_send_warning()` packing of the 16-byte legacy frame including the XOR CRC.
 
-**[1] `zephyr/samples/bluetooth/peripheral/src/main.c`**
-Used in `sim/mobile/src/main/src/codein.c`.
-Source for the BLE peripheral pattern: `BT_CONN_CB_DEFINE`, `connected()` / `disconnected()` callback signatures, `bt_le_adv_start()` call structure, and the `BT_GATT_SERVICE_DEFINE` / `BT_GATT_CHARACTERISTIC` / `BT_GATT_CCC` macro idiom for registering a custom vendor GATT service.
+### controller/src/bridge/bridge.c
+- Suggested the msgq + worker-thread pattern so the BLE notify callback (BT work-queue context) doesn't do struct conversion / `aircraft_db_upsert` inline.
+- Helped with validation (icao24 mask, lat/lon range) before the upsert call.
 
-**[2] `zephyr/samples/bluetooth/mtu_update/peripheral/src/peripheral_mtu_update.c`**
-Used in `sim/mobile/src/main/src/codein.c`.
-Source for the disconnected-then-re-advertise pattern: releasing the connection reference with `bt_conn_unref()` and immediately restarting advertising with `bt_le_adv_start()` so the central can reconnect without a board reset.
+### controller/src/aircraft_db/aircraft_db.c
+- Ported the miniproject's slist + stale-reaper pattern.
+- Helped structure the per-entry Kalman state field + the upsert vs insert branches.
+- The stale-reaper (10 s timeout) was suggested by AI after we saw stuck entries during the first BLE disconnect test.
 
-**[3] `zephyr/samples/bluetooth/peripheral_nus/src/main.c`**
-Referenced in `sim/mobile/src/common/src/ble_packet.h` and `sim/mobile/src/main/src/codein.c`.
-Source for the peripheral GAP advertising setup and the `BT_UUID_128_ENCODE()` / `BT_UUID_DECLARE_128()` idiom used to register 128-bit custom service UUIDs. NUS itself was not used — the UUID and frame format are entirely custom (see `ble_packet.h`).
+### controller/src/json/json_parser.c
+- Helped write the `JSON_OBJ_DESCR_*` descriptors matching `resources/standards/json_protocol.md`.
+- Suggested checking the parser-return bitmask to know which optional fields were present (alt/vel/hdg can each be absent on partial ADS-B fixes).
 
-**[4] `zephyr/samples/bluetooth/peripheral/src/main.c` — custom GATT service pattern**
-Used in `controller/src/ble/src/ble_central.c`.
-The Zephyr peripheral sample defines vendor characteristics with custom 128-bit UUIDs using `BT_UUID_INIT_128` + `BT_GATT_SERVICE_DEFINE`. The controller's GATT central mirrors this on the discovery side: the four-stage state machine (`DISC_SVC → DISC_CHR → DISC_WARN_SVC → DISC_WARN_CHR`) was written to discover the same two custom services that the sim node registers using this pattern.
+### controller/src/db_publisher/db_publisher.c
+- Wrote the snapshot-under-mutex / emit-after-release pattern so the publisher doesn't hold the DB lock during USB-CDC writes.
+- Helped with the optional-field snprintf (only emit `alt` / `vel` / `hdg` / `pred_lat,pred_lon` if their valid bits are set).
 
-### Mini-project reference
+### controller/src/kalman/kalman.c
+- Port of the miniproject 2-D Kalman to 4-D lat/lon state.
+- Helped with the per-axis Q construction (different metres-per-degree on lat vs lon at Brisbane latitude).
+- Wrote the closed-form 2×2 inversion for the K gain so we don't need a generic NxN solver.
+- Predict-ahead helper for the 10 s projection arrow on the GUI.
 
-**[5] `firmware/CSSE4011-Mini-Project/base/src/ble_central.c`**
-Used in `controller/src/ble/src/ble_central.c`.
-The earlier mini-project BLE central (written by Will) provided the structural idea for scan → connect → MTU exchange → GATT discovery → watchdog thread. The controller's `ble_central.c` adapted this state-machine skeleton but replaced all UUIDs, frame formats, and the notification/write pathway with the new SkyWatch protocol defined in `common/src/ble_packet.h`.
+### controller/src/collision/collision.c
+- Designed the `closest_approach()` math (Δr · Δv / |Δv|² → TCA → min_sep at TCA).
+- Threshold structure for ADVISORY (1 km / 60 s) / WARNING (500 m / 30 s) / CRASH (100 m / 100 m horizontal+vertical).
+- Helped write the per-pair transition tracker + the 15-s CRASH lock that prevents oscillation as a missile passes through a frozen sim.
+- Diversion picker (geometry → LEFT/RIGHT/CLIMB/DESCEND/RTB).
+- Predictive CRASH branch for fast-moving missiles that would otherwise pass through the 100 m zone between ticks (added Phase 12 when missiles at 750 kt were missed on first pass).
 
-### Where no example was available (original implementation)
+### controller/src/missile/missile.c
+- Pure-pursuit guidance math (desired heading = bearing-to-target, clamped to ±turn_rate × dt).
+- Helped with the metric-frame dead-reckoning so the missile actually moves between ticks instead of getting reset.
+- Configurable TTL / turn rate / speed args so we can demo slow vs hard difficulty.
 
-The following components had no applicable Zephyr or external example and were implemented from scratch:
+### controller/src/usb_device/usb_device.c
+- IAD class triple + USBD configuration for dual CDC ACM on a single USB device. We had no example for this anywhere — pure AI assist.
 
-- **Dual bidirectional custom GATT services** — registering two `BT_GATT_SERVICE_DEFINE` blocks on the same peripheral (one NOTIFY up, one WRITE-WITHOUT-RESPONSE down) with a matching four-stage central discovery state machine. No Zephyr sample covers this pattern.
-- **BLE warning frame protocol and XOR CRC** — the 16-byte `ble_warning_frame` layout, message-type enum (`0x02` collision / `0x03` diversion / `0x04` freetext / `0x05` crash), and CRC validation (`ble_warning_crc`) in `ble_packet.h` / `codein.c`.
-- **Dead-reckoning physics loop** — the 5 Hz send thread in `codein.c` computing lat/lon deltas from heading and speed using trigonometry and the haversine approximation.
-- **Circle / WASD aircraft control** — turn-rate calculation, heading accumulator, and bounded-coordinate clamping in `codein.c`.
-- **Pairwise collision TCA algorithm** — the time-of-closest-approach geometry and ADVISORY / WARNING / CRASH classification in `controller/src/collision/src/collision.c`.
-- **Kalman filter** — the 4D constant-velocity state estimator with white-noise-acceleration process noise in `controller/src/kalman/src/kalman.c`.
+### controller/src/usb_serial/usb_serial.c
+- DTR-gated `uart_poll_out` loop with a mutex around the entire write so concurrent producers (collision detector + db_publisher + missile worker) don't interleave at character granularity.
 
----
+### controller/src/usb_handler/usb_handler.c
+- Interrupt-driven Rx with a ring buffer and a line-reassembly state machine. AI helped with the ring-buffer-full / line-overrun stat counters.
 
-## License + attribution
+### controller/prj.conf
+- AI walked through the Kconfig flags needed for BLE central + GATT client + dual CDC + JSON parser + FPU sharing. Big help for the initial bring-up since we had no working baseline.
 
-Course project for CSSE4011 @ UQ, 2026. Mostly written from scratch
-by Blaise (controller, host) + Will (sim mobile + sim PC GUI). BLE
-GATT layout + the legacy 16-byte XOR-CRC warning frame are Will's
-design; reused under the same license as the rest of the repo.
+### controller/app.overlay
+- Overlay for the second `cdc_acm_uart1` instance plus the chosen-node remap for the shell-uart staying on ACM0.
+
+### controller/host/atc_gui.py
+- Wrote the QGraphicsScene-based map widget with the basemap + lat/lon grid + per-aircraft polygon items.
+- Suggested the per-ICAO hash-based colour scheme so the same aircraft is the same colour across runs.
+- Built the collision-history dashboard model + table widget (sticky `level_max`, FIFO 32-cap, `actual_sep_m` minimum tracking).
+- Mouse-wheel zoom + click-to-track + `Esc` keybinding code.
+- Q signal/slot dispatcher so the serial reader thread can safely push frames to the GUI.
+- LOST CONNECTION CRASH overlay (ported in from Will's sim GUI variant).
+
+### controller/host/mqtt_publisher.py
+- Background-thread + queue + last-will pattern. Helped with the paho-mqtt v1-vs-v2 callback API compatibility shim.
+
+### controller/host/influx_writer.py
+- Background-thread InfluxDB Cloud writer with a heartbeat tick so the dashboard always has fresh data even when no collisions are happening. AI helped with the Point / Tag / Field schema choice.
+
+### controller/host/run_skywatch.sh
+- Pre-flight check structure (dump1090 reachable / Python deps importable / mosquitto running / InfluxDB env set) before spawning the GUI.
+
+### sim/mobile/src/main/codein.c
+- Per-msg-type GATT write handler (0x02 collision / 0x03 diversion / 0x04 freetext / 0x05 crash). XOR CRC verify.
+- CRASH freeze + `crash_reset_work` delayable that snaps the aircraft back to St Lucia after 10 s.
+
+### sim/pc/simple_grid.py
+- The diversion-panel + collision-warning-flash machinery.
+- TV-static LOST CONNECTION overlay (`_animate_static` with 80 ms re-roll of pixel-grid colours).
+- Sticky-clear timer pattern for the diversion panel so it doesn't blink between controller re-fires.
+
+### General
+- Code commenting + module-header style. AI consistently nagged us to add purpose blocks at the top of each `.c` file — we mostly went along with it.
