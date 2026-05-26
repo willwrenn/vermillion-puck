@@ -1,10 +1,9 @@
 """
 SkyWatch JSON wire-protocol — Python source of truth.
 
-Stage:     all (locks the cross-language contract)
-Used by:   scripts/stage1/sdr_bridge.py, scripts/stage6/atc_gui.py, tests.
-           vermillion-puck/controller/src/json_parser.c mirrors the schema
-           via zephyr/data/json.h descriptors (Stage 2.3).
+Used by:   sdr_bridge.py, atc_gui.py, tests. The controller firmware's
+           json_parser.c mirrors this schema via zephyr/data/json.h
+           descriptors.
 Purpose:   Defines the AircraftFrame schema, dump1090 -> AircraftFrame
            normalisation, and a tiny runtime validator. One AircraftFrame
            per newline-terminated JSON object on the wire.
@@ -48,7 +47,7 @@ class AircraftFrame(TypedDict, total=False):
     vel: float         # ground speed in knots
     hdg: float         # track in degrees true, 0..360
     # Kalman 10 s-ahead projection — emitted once the controller's filter has
-    # had >=3 updates for this aircraft (Stage 7.2). Always emitted together.
+    # had >=3 updates for this aircraft. Always emitted together.
     pred_lat: float
     pred_lon: float
 
@@ -121,12 +120,12 @@ _REQUIRED_KEYS = {"type", "icao", "lat", "lon", "ts", "source"}
 _OPTIONAL_KEYS = {"alt", "vel", "hdg", "pred_lat", "pred_lon"}
 _ALLOWED_SOURCES = {"ADS_B", "BLE_SIM", "FICT"}
 
-# Stage 8.2 — second frame type on the same ACM1 stream.
+# Second frame type on the same ACM1 stream (alongside the `aircraft` frame).
 _COLLISION_REQUIRED_KEYS = {"type", "icao_a", "icao_b", "level", "tca_s", "min_sep_m", "ts"}
 _ALLOWED_COLLISION_LEVELS = {"CLEAR", "ADVISORY", "WARNING", "CRASH"}
-# Stage 11 — controller adds an optional "diversion" field to every JSON
-# frame for the encounter while a diversion has been suggested. The GUI
-# banner shows it so the operator sees the controller's recommendation.
+# Controller adds an optional "diversion" field to every JSON frame for the
+# encounter while a diversion has been suggested. The GUI banner shows it so
+# the operator sees the controller's recommendation.
 _ALLOWED_DIVERSIONS = {"LEFT", "RIGHT", "CLIMB", "DESCEND", "RTB", "HOLD"}
 
 
@@ -184,9 +183,9 @@ def validate_collision(frame: dict) -> dict:
             raise ProtocolError(
                 f"collision: {k} must be numeric, got {type(frame[k]).__name__}"
             )
-    # Phase 12 — optional `actual_sep_m`: CURRENT Euclidean separation
-    # (m) at emit time. The history dashboard minimises over this to
-    # show how close the aircraft actually got, not the projected min.
+    # Optional `actual_sep_m`: CURRENT Euclidean separation (m) at emit
+    # time. The history dashboard minimises over this to show how close
+    # the aircraft actually got, not the projected min.
     if "actual_sep_m" in frame and not isinstance(frame["actual_sep_m"], (int, float)):
         raise ProtocolError(
             f"collision: actual_sep_m must be numeric, got {type(frame['actual_sep_m']).__name__}"

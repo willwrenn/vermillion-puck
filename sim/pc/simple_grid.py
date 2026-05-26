@@ -257,8 +257,8 @@ def _clear_diversion():
     div_box.config(bg=_DIV_OFF)
     div_icao_var.set("")
     div_instr_var.set("")
-    # Phase 12 — also cancel any pending sticky-clear so we don't leak
-    # tkinter after-handles after an explicit `WARN clear`.
+    # Also cancel any pending sticky-clear so we don't leak tkinter
+    # after-handles after an explicit `WARN clear`.
     if _div_clear_job[0]:
         try: root.after_cancel(_div_clear_job[0])
         except Exception: pass
@@ -272,9 +272,9 @@ def trigger_diversion(message):
                  fg="#ffd54f" if w.cget("font") != "Courier 8 bold" else "#ffffff")
     div_box.config(bg=_DIV_ON)
 
-# Phase 12 — sticky-clear so the orange panel stays visible while frames
-# arrive (controller re-fires every 3 s). On each call: paint the panel
-# and (re-)arm a 4.5 s clear timer. 4.5 s comfortably exceeds the 3 s
+# Sticky-clear so the orange panel stays visible while frames arrive
+# (controller re-fires every 3 s). On each call: paint the panel and
+# (re-)arm a 4.5 s clear timer. 4.5 s comfortably exceeds the 3 s
 # re-fire interval so the panel never blinks off between frames; clears
 # 4.5 s after the LAST frame for the encounter.
 _div_clear_job = [None]
@@ -336,7 +336,7 @@ def _clear_all():
     _clear_diversion()
     _log_clear_event()
 
-# ── LOST CONNECTION overlay (Stage 11) ───────────────────────────────────────
+# ── LOST CONNECTION overlay ──────────────────────────────────────────────────
 # When the controller sends a CRASH BLE frame to the mobile (50 m horiz +
 # 50 m vert), the mobile freezes physics for 10 s and prints "WARN crash"
 # to ttyACM0. This overlay catches that line and renders a full-screen
@@ -413,8 +413,8 @@ def handle_line(text):
             icao = clean.split("ICAO=")[1].split()[0] if "ICAO=" in clean else ""
             root.after(0, lambda i=icao: trigger_warning(f"ICAO {i}"))
         elif clean.startswith("WARN diversion") or "WARN diversion" in clean:
-            # Phase 12 — controller-suggested diversion. Format from
-            # codein.c: "WARN diversion ICAO=xxxxxx hdg_delta=N alt_delta=M"
+            # Controller-suggested diversion. Format from codein.c:
+            # "WARN diversion ICAO=xxxxxx hdg_delta=N alt_delta=M"
             # Encoding mirrors send_ble_diversion() in collision.c:
             # ±30 hdg_delta = LEFT / RIGHT
             # ±100 hdg_delta = (reserved, currently unused)
@@ -438,7 +438,7 @@ def handle_line(text):
             msg = clean.split("WARN msg", 1)[1].strip()
             root.after(0, lambda m=msg: _trigger_diversion_sticky(m))
         elif "WARN crash" in clean:
-            # Stage 11 — full-screen red CRASHED overlay for 10 s.
+            # Full-screen TV-static LOST CONNECTION overlay for 10 s.
             root.after(0, _trigger_crash)
         elif "WARN clear" in clean:
             root.after(0, _clear_all)

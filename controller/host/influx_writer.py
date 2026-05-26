@@ -1,11 +1,11 @@
 """
-SkyWatch ATC GUI — InfluxDB Cloud writer (Phase 10.3).
+SkyWatch ATC GUI — InfluxDB Cloud writer.
 
 Writes CollisionFrame events as time-series points to InfluxDB Cloud so
 the built-in dashboard ("Active alerts" table, min-sep over time chart)
-has data to render. Mirrors the miniproject's `_InfluxWriter` pattern
-(stage2_map.py:20-50): queue + daemon thread so the UI never blocks on
-a slow HTTPS round-trip to AWS.
+has data to render. Mirrors the miniproject's `_InfluxWriter` pattern:
+queue + daemon thread so the UI never blocks on a slow HTTPS round-trip
+to AWS.
 
 Measurement schema:
     measurement: skywatch_events

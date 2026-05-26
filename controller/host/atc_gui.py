@@ -77,9 +77,9 @@ _STANDARDS = _find_standards()
 sys.path.insert(0, str(_STANDARDS))
 from json_protocol import validate, ProtocolError  # noqa: E402
 
-# Phase 10 sidecar publishers — both live next to this file (single source
-# of truth in vermillion-puck/controller/host/). Imported via the absolute
-# file path so the GUI runs from the symlink at scripts/stage6/ too.
+# Sidecar publishers — both live next to this file (single source of
+# truth in vermillion-puck/controller/host/). Imported via the absolute
+# file path so the GUI runs from a symlinked location too.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mqtt_publisher import MqttPublisher        # noqa: E402
 from influx_writer  import InfluxWriter         # noqa: E402
@@ -105,9 +105,9 @@ except ImportError:
 STALE_S = 10.0     # match firmware AIRCRAFT_DB_STALE_MS
 REFRESH_HZ = 2.0
 
-# Stage 11 — how long to hide a crashed aircraft from the map. Sim window
-# matches the mobile firmware's 10 s freeze-then-reset; real aircraft get
-# longer because they only reappear naturally on the next ADS-B frame.
+# How long to hide a crashed aircraft from the map. Sim window matches
+# the mobile firmware's 10 s freeze-then-reset; real aircraft get longer
+# because they only reappear naturally on the next ADS-B frame.
 CRASH_HIDE_SIM_S  = 10.0
 CRASH_HIDE_REAL_S = 20.0
 
@@ -301,7 +301,7 @@ class AircraftTable(QTableWidget):
 
 
 # ---------------------------------------------------------------------- #
-# Collision history (Stage 8 polish).
+# Collision history dashboard.
 #   - One row per (icao_a, icao_b) pair the controller has *ever* flagged
 #     as ADVISORY or WARNING since GUI start.
 #   - Persists across CLEAR — keeps level_max and the smallest-ever min_sep
@@ -366,7 +366,7 @@ class CollisionHistoryModel:
 
 class CollisionHistoryTable(QTableWidget):
     # 8 widths to match HISTORY_COLUMNS (ICAO A, ICAO B, Max, Min sep,
-    # Δalt, CRASH?, Issued, Updated). Phase 12 added the CRASH? column.
+    # Δalt, CRASH?, Issued, Updated).
     _COL_WIDTHS = [70, 70, 75, 80, 75, 60, 75, 80]
 
     def __init__(self):
@@ -433,15 +433,15 @@ class CollisionHistoryTable(QTableWidget):
 
 
 # ---------------------------------------------------------------------- #
-# Map widget (6.2): lat/lon grid + per-aircraft triangle icon + label.
-# Stage 6.3 will hang a 50-point alpha-fade trail off this.
+# Map widget: lat/lon grid + per-aircraft triangle icon + label, plus a
+# 50-point alpha-fade position trail per aircraft.
 # ---------------------------------------------------------------------- #
 
 class MapView(QGraphicsView):
     SCENE_W = 800
     SCENE_H = 800
     GRID_STEP_DEG = 0.1   # 0.1° ≈ 11 km lat / ~10 km lon at Brisbane
-    TRAIL_LEN = 50        # Stage 6.3: per-aircraft trail length (positions)
+    TRAIL_LEN = 50        # per-aircraft trail length (positions)
 
     def __init__(self, lat_center: float, lon_center: float, span_deg: float):
         super().__init__()
@@ -485,13 +485,13 @@ class MapView(QGraphicsView):
 
         # icao -> (polygon_item, label_item)
         self.items: Dict[str, Tuple[QGraphicsPolygonItem, QGraphicsSimpleTextItem]] = {}
-        # Stage 6.3: rolling trail of scene-coord points per ICAO.
+        # Rolling trail of scene-coord points per ICAO.
         self.trails: Dict[str, Deque[Tuple[float, float]]] = {}
-        # Stage 6.3: line-item segments per ICAO, recycled in place so we
-        # don't churn the scene graph every tick.
+        # Line-item segments per ICAO, recycled in place so we don't
+        # churn the scene graph every tick.
         self.trail_segs: Dict[str, List[QGraphicsLineItem]] = {}
-        # Stage 7.4: per-ICAO dashed line + arrowhead from current pos to
-        # Kalman prediction. Only present when the firmware set
+        # Per-ICAO dashed line + arrowhead from current pos to Kalman
+        # prediction. Only present when the firmware set
         # AIRCRAFT_VALID_PRED on the frame.
         self.pred_lines: Dict[str, QGraphicsLineItem] = {}
         self.pred_heads: Dict[str, QGraphicsPolygonItem] = {}
@@ -933,8 +933,8 @@ class MapView(QGraphicsView):
             x, y = self.to_xy(lat, lon)
             age = now - recv_t
 
-            # Stage 11 — crashed aircraft are hidden from the map while
-            # their respawn window is open. Hide existing items (if any)
+            # Crashed aircraft are hidden from the map while their
+            # respawn window is open. Hide existing items (if any)
             # and skip the trail/prediction updates so nothing else for
             # this ICAO renders either. When the window closes (icao
             # drops out of crashed_icaos), the next tick goes through
@@ -983,8 +983,8 @@ class MapView(QGraphicsView):
                 self.scene.addItem(label_item)
                 self.items[icao] = (poly_item, label_item)
 
-            # Stage 11 — un-hide if the respawn window just closed; safe
-            # to call every tick.
+            # Un-hide if the respawn window just closed; safe to call
+            # every tick.
             poly_item.setVisible(True)
             label_item.setVisible(True)
 
@@ -1003,7 +1003,7 @@ class MapView(QGraphicsView):
             z = max(self._current_zoom(), 1e-3)
             label_item.setPos(x + 8.0 / z, y - 14.0 / z)
 
-            # Stage 7.4 — dashed line to Kalman 10 s-ahead position.
+            # Dashed line to Kalman 10 s-ahead position.
             self._update_pred(icao, x, y,
                               frame.get("pred_lat"), frame.get("pred_lon"),
                               colour)
@@ -1060,15 +1060,15 @@ class AtcMainWindow(QMainWindow):
         self.last_frame_t: float = 0.0   # wall-clock when most recent frame arrived
         self.last_ble_frame_t: float = 0.0
         self.last_ble_icao: str = ""
-        # Stage 8.4: active collision events. Keyed by tuple (icao_a, icao_b)
-        # — controller already emits them lexicographically sorted.
+        # Active collision events. Keyed by tuple (icao_a, icao_b) —
+        # controller already emits them lexicographically sorted.
         # Value: (level_str, tca_s, min_sep_m, alt_diff_ft|None, last_seen_t)
         self.alerts: Dict[Tuple[str, str], Tuple] = {}
-        # Stage 11: crashed aircraft -> wall-clock time after which they
-        # become visible again. While in this map, render_entries skips
-        # the icon (both real aircraft and sim) so the map shows the
-        # crash + respawn cycle. Sim: 10 s matches Will's freeze + reset.
-        # Real: 20 s — they reappear naturally when fresh ADS-B arrives.
+        # Crashed aircraft -> wall-clock time after which they become
+        # visible again. While in this map, render_entries skips the
+        # icon (both real aircraft and sim) so the map shows the
+        # crash + respawn cycle. Sim: 10 s matches the mobile firmware's
+        # freeze + reset. Real: 20 s — reappear when fresh ADS-B arrives.
         self._crashed: Dict[str, float] = {}
 
         # Persistent collision-history model + widget (always built so that
@@ -1076,11 +1076,11 @@ class AtcMainWindow(QMainWindow):
         self.history = CollisionHistoryModel()
         self.history_table = CollisionHistoryTable()
 
-        # Phase 10 — publish CollisionFrame events out-of-process so an
-        # InfluxDB dashboard + external MQTT subscribers can render the
-        # same data. Both are best-effort: if MQTT broker is down or
-        # InfluxDB creds are missing, .start() returns False and the GUI
-        # carries on without them.
+        # Publish CollisionFrame events out-of-process so an InfluxDB
+        # dashboard + external MQTT subscribers can render the same
+        # data. Both are best-effort: if the MQTT broker is down or
+        # InfluxDB creds are missing, .start() returns False and the
+        # GUI carries on without them.
         self.mqtt   = MqttPublisher()
         self.influx = InfluxWriter()
         self._mqtt_ok   = self.mqtt.start()
@@ -1096,7 +1096,7 @@ class AtcMainWindow(QMainWindow):
         self.map   = MapView(lat_center, lon_center, span_deg) \
                      if view_mode != "table" else None
 
-        # Stage 8.4 — collision alert banner. Hidden until alerts.appears.
+        # Collision alert banner. Hidden until an alert appears.
         self.alert_banner = QLabel()
         self.alert_banner.setVisible(False)
         self.alert_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1202,17 +1202,17 @@ class AtcMainWindow(QMainWindow):
         tca   = float(frame.get("tca_s", 0.0))
         sep   = float(frame.get("min_sep_m", 0.0))           # projected
         alt_d = frame.get("alt_diff_ft")  # may be None if firmware didn't report
-        divert = frame.get("diversion")   # Stage 11: controller's suggestion (or None)
-        # Phase 12 — history dashboard should record what the aircraft
-        # ACTUALLY got down to, not the predicted closest approach. Use
-        # `actual_sep_m` (current Euclidean) for the history minimisation;
-        # fall back to `min_sep_m` for backwards compat with old captures.
+        divert = frame.get("diversion")   # controller's suggestion (or None)
+        # History dashboard should record what the aircraft ACTUALLY got
+        # down to, not the predicted closest approach. Use `actual_sep_m`
+        # (current Euclidean) for the history minimisation; fall back to
+        # `min_sep_m` for backwards compat with old captures.
         sep_actual = float(frame.get("actual_sep_m", sep))
         self.history.on_event(key, level, tca, sep_actual, alt_d, recv_t)
-        # Phase 10 fan-out: every CollisionFrame goes to MQTT (live push to
-        # external subscribers) AND InfluxDB Cloud (time-series store for
-        # the dashboard's Active alerts table). Both are non-blocking; if
-        # the broker / network is down the message is dropped silently.
+        # Sidecar fan-out: every CollisionFrame goes to MQTT (live push
+        # to external subscribers) AND InfluxDB Cloud (time-series store
+        # for the dashboard's Active alerts table). Both are non-blocking;
+        # if the broker / network is down the message is dropped silently.
         if self._mqtt_ok:
             self.mqtt.publish_collision(frame)
         if self._influx_ok:
@@ -1220,8 +1220,8 @@ class AtcMainWindow(QMainWindow):
         if level == "CLEAR":
             self.alerts.pop(key, None)
             return
-        # Stage 11 — CRASH: hide both aircraft from the map. SIM gets the
-        # shorter window so it matches the mobile's freeze-and-respawn;
+        # CRASH: hide both aircraft from the map. SIM gets the shorter
+        # window so it matches the mobile's freeze-and-respawn;
         # everything else gets the longer window.
         if level == "CRASH":
             for icao in (key[0], key[1]):
@@ -1237,16 +1237,16 @@ class AtcMainWindow(QMainWindow):
             if now - self.entries[icao][1] > STALE_S:
                 del self.entries[icao]
 
-        # Stage 11 — expire the crashed-aircraft hide window. After this,
-        # the icon comes back on the next render tick (the underlying
-        # self.entries row was never removed; we just hid it visually).
+        # Expire the crashed-aircraft hide window. After this, the icon
+        # comes back on the next render tick (the underlying self.entries
+        # row was never removed; we just hid it visually).
         for icao in list(self._crashed.keys()):
             if now >= self._crashed[icao]:
                 del self._crashed[icao]
 
-        # Stage 8.4 — expire alerts that haven't been refreshed in 3 s
-        # (controller emits every 1 s when WARNING-active; 3 s is safe
-        # against transient frame loss). Collect set of ICAOs to highlight.
+        # Expire alerts that haven't been refreshed in 3 s (controller
+        # emits every 1 s when WARNING-active; 3 s is safe against
+        # transient frame loss). Collect set of ICAOs to highlight.
         # CRASH alerts skip this expiry: they're terminal and stay visible
         # in the banner for the full hide window.
         for k in list(self.alerts.keys()):
@@ -1301,7 +1301,7 @@ class AtcMainWindow(QMainWindow):
                     "↻ BLE   scanning — controller auto-reconnects every 2 s",
                     "#f38ba8")
 
-        # Stage 8.4 — refresh the alert banner.
+        # Refresh the alert banner.
         if self.alerts:
             # Worst level first; flash background between two reds each tick.
             order = {"CRASH": 0, "WARNING": 1, "ADVISORY": 2, "CLEAR": 3}
@@ -1309,9 +1309,9 @@ class AtcMainWindow(QMainWindow):
                            key=lambda kv: (order.get(kv[1][0], 9), kv[0]))
             lines = []
             for (a, b), (lvl, tca, sep, alt_d, _, divert) in items[:4]:   # cap to 4 visible
-                # Stage 11 — append the controller's suggested diversion
-                # (LEFT / RIGHT / CLIMB / etc) so the operator sees what
-                # ATC recommended, not just the live separation numbers.
+                # Append the controller's suggested diversion (LEFT /
+                # RIGHT / CLIMB / etc) so the operator sees what ATC
+                # recommended, not just the live separation numbers.
                 div_suffix = f" · DIVERT {divert}" if divert else ""
                 if lvl == "CRASH":
                     # Terminal — drop the live numerics and announce death.

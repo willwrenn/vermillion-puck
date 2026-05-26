@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase 10 end-to-end smoke test — fires a few synthetic CollisionFrames
+End-to-end smoke test — fires a few synthetic CollisionFrames
 through the MQTT publisher AND InfluxDB writer so an InfluxDB dashboard
 + mosquitto_sub can be verified without the controller / sim hardware
 running.

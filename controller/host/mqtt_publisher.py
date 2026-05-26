@@ -1,5 +1,5 @@
 """
-SkyWatch ATC GUI — MQTT publisher (Phase 10.2).
+SkyWatch ATC GUI — MQTT publisher.
 
 Publishes collision events to a Mosquitto broker so external subscribers
 (future phone apps, command-line `mosquitto_sub` for the demo, etc.) can
@@ -27,7 +27,7 @@ GUI's _on_collision() never blocks on broker latency. If the broker is
 unreachable, paho's built-in auto-reconnect handles it — meanwhile the
 queue drops messages with QoS 0 to avoid unbounded growth.
 
-Design parallel to influx_writer.py (Phase 10.3): both consume the same
+Design parallel to influx_writer.py: both consume the same
 in-memory CollisionFrame dicts via .publish_collision(), letting the GUI
 write to multiple sinks in one call.
 """
