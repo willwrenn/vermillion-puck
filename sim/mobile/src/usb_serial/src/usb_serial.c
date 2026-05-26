@@ -17,7 +17,7 @@ LOG_MODULE_REGISTER(usb_serial, LOG_LEVEL_INF);
 // bypassing the shell/log backend entirely. ttyACM0 sees no JSON;
 // ttyACM1 sees no shell noise or ANSI codes.
 static const struct device *g_data_uart =
-	DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1));
+	DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
 
 // checks the data UART is ready and logs where things will come out
 int usb_serial_init(void)

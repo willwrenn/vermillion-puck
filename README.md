@@ -24,9 +24,10 @@ and a Tk "LOST CONNECTION" death screen on the sim side.
                                        ├─ MQTT publish → Mosquitto
                                        └─ InfluxDB Cloud writes → dashboard
    sim/pc/simple_grid.py (tkinter)
-        ▲ JSON over USB-CDC ttyACM (sim's data port)
+        ▲ JSON + WARN lines over USB-CDC ttyACM3 (sim data port)
         └─ Brisbane map + position trail + DIVERSION panel +
            full-screen TV-static "LOST CONNECTION" overlay on CRASH
+   screen /dev/ttyACM2 → aircraft circle / set / wasd / reset (sim shell)
 ```
 
 Repo layout (only what's tracked):
@@ -134,11 +135,10 @@ clean attach:
 |---|---|---|
 | `/dev/ttyACM0` | Controller | shell — `skywatch ...` commands |
 | `/dev/ttyACM1` | Controller | data — JSON aircraft + collision frames |
-| `/dev/ttyACM2` | Sim mobile | raw single-byte wasd input (silent) |
-| `/dev/ttyACM3` | Sim mobile | Zephyr shell + position JSON |
+| `/dev/ttyACM2` | Sim mobile | shell — `aircraft ...` commands |
+| `/dev/ttyACM3` | Sim mobile | data — JSON position + WARN lines |
 
-(Numbers shift each time a board re-enumerates — identify by sniffing
-or use the helper script in `resources/handover.md`.)
+(Numbers shift each time a board re-enumerates — identify by sniffing output.)
 
 ### Launch options
 
@@ -167,14 +167,12 @@ python3 controller/host/atc_gui.py --port /dev/ttyACM1
 cd sim/pc && python3 simple_grid.py --port /dev/ttyACM3 --map staticmap.jpeg
 ```
 
-**Sim aircraft control** (separate terminal — write into the sim's shell port):
+**Sim aircraft control** — open the sim shell:
 
 ```bash
-function ac()     { echo -e "aircraft $*\r"        > /dev/ttyACM3; }
-function circle() { echo -e "aircraft circle $*\r" > /dev/ttyACM3; }
+screen /dev/ttyACM2 115200
+# press Enter to get the uart:~$ prompt, then type aircraft commands directly
 ```
-
-Add to `~/.bashrc` once (`source ~/.bashrc`) so they persist across sessions.
 
 #### Position + flight parameters
 
@@ -382,9 +380,8 @@ bash controller/host/run_skywatch.sh --no-sdr
 screen /dev/ttyACM0 115200
 #    C — your tkinter sim GUI:
 cd sim/pc && python3 simple_grid.py --port /dev/ttyACM3 --map staticmap.jpeg
-#    D — sim aircraft control (paste once, then issue `ac` / `circle`):
-function ac()     { echo -e "aircraft $*\r"        > /dev/ttyACM3; }
-function circle() { echo -e "aircraft circle $*\r" > /dev/ttyACM3; }
+#    D — sim aircraft control (Zephyr shell on ACM2):
+screen /dev/ttyACM2 115200
 ```
 
 That's the whole bring-up. From here, drive the scenarios in §**Test**
