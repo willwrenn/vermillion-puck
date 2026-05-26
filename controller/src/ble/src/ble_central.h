@@ -4,10 +4,10 @@
  * Discovers the SkyWatch aircraft service on a peripheral advertising as
  * `skywatch-sim` (William's sim node). Two-stage GATT discovery:
  *   1. SkyWatch aircraft service + characteristic — NOTIFY, position
- *      frames in via bridge_submit_frame() (Stage 3.x).
+ *      frames in via bridge_submit_frame().
  *   2. Warning service (`ab340001-...`) + characteristic — WRITE,
  *      collision / diversion / CRASH frames out via
- *      ble_central_send_warning() (Stage 8.3 / Stage 11).
+ *      ble_central_send_warning().
  *
  * Plus a watchdog k_work that auto-reconnects every 2 s when the link
  * drops, so the demo survives the sim being unplugged + replugged.
@@ -27,7 +27,7 @@ bool ble_central_is_connected(void);
 void ble_central_disconnect(void);
 void ble_central_scan_list(const struct shell *sh);
 
-/* Stage 8.3 — write Will's legacy `warning_frame` to the sim node's WARN
+/* write Will's legacy `warning_frame` to the sim node's WARN
  * characteristic via write-without-response. Caller fills the entire
  * `ble_warning_frame` including the XOR CRC (see ble_warning_crc()).
  * Returns 0 on accepted submit, -ENOTCONN if not connected, -EAGAIN if

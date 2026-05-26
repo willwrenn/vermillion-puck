@@ -1,11 +1,23 @@
+/*
+ * SkyWatch sim mobile — USB device bring-up.
+ *
+ * Registers a single CDC ACM class instance on top of the nRF52840 USB
+ * device-next stack. The sim mobile multiplexes the Zephyr shell, log
+ * backend, position JSON, and WARN text lines all over the same port
+ * (/dev/ttyACM0 host-side), so a single CDC instance is sufficient —
+ * unlike the controller which needs two (shell on ACM0, JSON on ACM1).
+ *
+ * Replaces `CDC_ACM_SERIAL_INITIALIZE_AT_BOOT` so we control the
+ * enumeration order and the manufacturer / product strings.
+ */
 #include <zephyr/usb/usbd.h>
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(usb_device, LOG_LEVEL_INF);
 
-// custom USB init — registers cdc_acm_0 (shell/ttyACM0) then cdc_acm_1 (data/ttyACM1)
-// replaces CDC_ACM_SERIAL_INITIALIZE_AT_BOOT
+/* Custom USB init — registers cdc_acm_0 (shell + data, /dev/ttyACM0).
+ * Replaces CDC_ACM_SERIAL_INITIALIZE_AT_BOOT. */
 USBD_DEVICE_DEFINE(miniproject_usbd,
 		   DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
 		   0x2fe3, 0x0005);

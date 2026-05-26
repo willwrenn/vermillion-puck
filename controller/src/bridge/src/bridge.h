@@ -1,7 +1,7 @@
 /*
  * SkyWatch controller — BLE binary frame -> aircraft_t bridge.
  *
- * Inputs:  `struct ble_aircraft_frame` (binary, common/src/ble_packet.h)
+ * Inputs: `struct ble_aircraft_frame` (binary, common/src/ble_packet.h)
  *          via bridge_submit_frame() called from the BLE notify callback.
  * Outputs: `struct aircraft_t` (common/src/aircraft_t.h) routed to
  *          `aircraft_db_upsert()` so the sim's position fuses with any

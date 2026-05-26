@@ -67,8 +67,8 @@ Source: `sim/mobile/src/common/src/ble_packet.h`
 ## 1.1 C struct (verbatim)
 
 ```c
-#define BLE_PROTOCOL_VERSION   1
-#define BLE_FRAME_SIZE         38
+#define BLE_PROTOCOL_VERSION 1
+#define BLE_FRAME_SIZE 38
 
 enum ble_aircraft_source {
     BLE_SRC_ADS_B   = 0,   /* Only for completeness — sim normally sends BLE_SIM. */
@@ -77,10 +77,10 @@ enum ble_aircraft_source {
 
 /* If a *_VALID bit is clear, the corresponding field's value is undefined
  * and MUST be ignored by the receiver. */
-#define BLE_FLAG_ON_GROUND  (1u << 0)
-#define BLE_FLAG_ALT_VALID  (1u << 1)
-#define BLE_FLAG_VEL_VALID  (1u << 2)
-#define BLE_FLAG_HDG_VALID  (1u << 3)
+#define BLE_FLAG_ON_GROUND (1u << 0)
+#define BLE_FLAG_ALT_VALID (1u << 1)
+#define BLE_FLAG_VEL_VALID (1u << 2)
+#define BLE_FLAG_HDG_VALID (1u << 3)
 
 struct __packed ble_aircraft_frame {
     uint8_t  source;          /* enum ble_aircraft_source */
@@ -326,10 +326,10 @@ enum collision_level {
 };
 
 enum collision_diversion {
-    DIVERSION_LEFT    = 0,   /* turn -30°  */
-    DIVERSION_RIGHT   = 1,   /* turn +30°  */
-    DIVERSION_CLIMB   = 2,   /* +1000 ft   */
-    DIVERSION_DESCEND = 3,   /* -1000 ft   */
+    DIVERSION_LEFT    = 0,   /* turn -30° */
+    DIVERSION_RIGHT   = 1,   /* turn +30° */
+    DIVERSION_CLIMB   = 2,   /* +1000 ft */
+    DIVERSION_DESCEND = 3,   /* -1000 ft */
     DIVERSION_RTB     = 4,   /* head toward UQ St Lucia */
     DIVERSION_HOLD    = 5,   /* enter holding circle */
 };
@@ -338,14 +338,14 @@ enum collision_diversion {
 Threshold #defines (same header):
 
 ```c
-#define COLLISION_ADVISORY_SEP_M   1000.0
-#define COLLISION_ADVISORY_TCA_S   60.0
-#define COLLISION_WARNING_SEP_M    500.0
-#define COLLISION_WARNING_TCA_S    30.0
-#define COLLISION_CRASH_SEP_M      100.0
-#define COLLISION_CRASH_VERT_FT    328     /* ~100 m */
-#define COLLISION_VERTICAL_SEP_FT  1000    /* gate — force CLEAR if vert > this */
-#define COLLISION_TICK_MS          200     /* 5 Hz collision detector */
+#define COLLISION_ADVISORY_SEP_M 1000.0
+#define COLLISION_ADVISORY_TCA_S 60.0
+#define COLLISION_WARNING_SEP_M 500.0
+#define COLLISION_WARNING_TCA_S 30.0
+#define COLLISION_CRASH_SEP_M 100.0
+#define COLLISION_CRASH_VERT_FT 328 /* ~100 m */
+#define COLLISION_VERTICAL_SEP_FT 1000 /* gate — force CLEAR if vert > this */
+#define COLLISION_TICK_MS 200 /* 5 Hz collision detector */
 ```
 
 Example wire frame (WARNING-level encounter, both alt known, with
@@ -617,13 +617,13 @@ you want to show what each block holds.
 Source: `controller/src/common/src/aircraft_t.h`.
 
 ```c
-#define AIRCRAFT_ICAO_LEN          6  /* 6 hex chars; storage = LEN+1 with NUL */
-#define AIRCRAFT_ICAO_BUF_LEN      (AIRCRAFT_ICAO_LEN + 1)
+#define AIRCRAFT_ICAO_LEN 6 /* 6 hex chars; storage = LEN+1 with NUL */
+#define AIRCRAFT_ICAO_BUF_LEN (AIRCRAFT_ICAO_LEN + 1)
 
-#define AIRCRAFT_VALID_ALT         (1u << 0)
-#define AIRCRAFT_VALID_VEL         (1u << 1)
-#define AIRCRAFT_VALID_HDG         (1u << 2)
-#define AIRCRAFT_VALID_PRED        (1u << 3)   /* Kalman pred_lat/lon valid */
+#define AIRCRAFT_VALID_ALT (1u << 0)
+#define AIRCRAFT_VALID_VEL (1u << 1)
+#define AIRCRAFT_VALID_HDG (1u << 2)
+#define AIRCRAFT_VALID_PRED (1u << 3) /* Kalman pred_lat/lon valid */
 
 enum aircraft_source {
     SRC_UNKNOWN = 0,
@@ -658,7 +658,7 @@ rather than ghosting forever).
 
 # 9. Summary — every link at a glance
 
-| # | Link                          | Direction              | Transport            | Framing                          | Update rate    | Struct / format |
+| # | Link | Direction | Transport | Framing | Update rate    | Struct / format |
 |---|-------------------------------|------------------------|----------------------|----------------------------------|----------------|-----------------|
 | 1 | BLE aircraft frame            | Sim → Controller       | GATT NOTIFY          | 38-byte binary LE                | 5 Hz           | `ble_aircraft_frame` |
 | 2 | BLE warning frame             | Controller → Sim       | GATT WRITE (no resp) | 16-byte binary + XOR CRC         | On transition + ~8 s re-fire | `ble_warning_frame` |

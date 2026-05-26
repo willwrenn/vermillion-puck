@@ -1,18 +1,17 @@
 /*
  * SkyWatch controller shell — `skywatch ...` subcommand tree on ACM0.
  *
- * Single root command (`skywatch`) with seven subcommand groups built
- * up incrementally across phases:
- *   ping              — Phase 2.1 liveness check (returns "pong")
- *   usb               — Phase 2 USB stats
- *   ble               — Phase 3 BLE central state + scanning
- *   db                — Phase 4 aircraft DB inspection
- *   kalman            — Phase 7 KF tuning + microbench
- *   collision         — Phase 8 detector stats + inject / ghost / ghost_at /
- *                       ghost_stop / crash (CRASH was added Phase 11)
- *   missile           — Phase 11 pursuit-missile sandbox
- *   diversion         — Phase 11 manual diversion suggestion to the sim
- *   test_json         — Phase 2.3 JSON-parser sanity check
+ * Single root command (`skywatch`) with the following subcommand groups:
+ *   ping       — liveness check (returns "pong")
+ *   usb        — USB Rx counters
+ *   ble        — BLE central state + scanning + inject
+ *   db         — aircraft DB inspection (dump / count / clear)
+ *   kalman     — KF tuning (q/r) + microbench
+ *   collision  — detector stats + inject / stop / crash /
+ *                ghost / ghost_at / ghost_stop
+ *   missile    — pursuit-missile sandbox (launch / cancel)
+ *   diversion  — manual diversion suggestion to the sim
+ *   test_json  — JSON-parser sanity check (two canned frames)
  *
  * All output goes to the shell-uart (ttyACM0 via Zephyr's shell backend);
  * data lines (aircraft JSON + collision frames) go to ttyACM1 via
@@ -61,7 +60,7 @@ static int cmd_skywatch_usb_stats(const struct shell *sh, size_t argc, char **ar
 }
 
 /* Two canned ADS-B frames used by `skywatch test_json` —
- *   - "full"  exercises every field including the optionals,
+ * - "full" exercises every field including the optionals,
  *   - "minimal" omits alt/vel/hdg to exercise the optional-absent path. */
 static const char SAMPLE_FULL[] =
 	"{\"type\":\"aircraft\",\"icao\":\"a1b2c3\","
@@ -184,7 +183,7 @@ static int cmd_ble_stats(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-/* Hardcoded sample BLE frame for Stage 3.3 verification without a live sim. */
+/* Hardcoded sample BLE frame for verification without a live sim. */
 static int cmd_ble_inject(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -225,7 +224,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ble,
 	SHELL_CMD(scan,       &sub_ble_scan, "Scan subcommands.", NULL),
 	SHELL_CMD(disconnect, NULL,          "Disconnect current peer.", cmd_ble_disconnect),
 	SHELL_CMD(stats,      NULL,          "Print BLE + bridge counters.", cmd_ble_stats),
-	SHELL_CMD(inject,     NULL,          "Inject a hardcoded ble_aircraft_frame through the bridge (Stage 3.3 verifier).",
+	SHELL_CMD(inject,     NULL,          "Inject a hardcoded ble_aircraft_frame through the bridge (offline bridge verifier).",
 		  cmd_ble_inject),
 	SHELL_SUBCMD_SET_END
 );
@@ -439,15 +438,15 @@ static int cmd_collision_stop(const struct shell *sh, size_t argc, char **argv)
 static int cmd_collision_ghost(const struct shell *sh, size_t argc, char **argv)
 {
 	/* Positional optional args: [tca_s] [miss_m] [alt_ft]
-	 *   tca_s   — seconds to closest approach (default 23)
-	 *   miss_m  — perpendicular miss distance in metres (default 0 = direct hit)
-	 *   alt_ft  — ghost altitude in feet (default = Will's current altitude)
+	 * tca_s — seconds to closest approach (default 23)
+	 * miss_m — perpendicular miss distance in metres (default 0 = direct hit)
+	 * alt_ft — ghost altitude in feet (default = Will's current altitude)
 	 *
 	 * Examples:
-	 *   skywatch collision ghost                 → default head-on hit
-	 *   skywatch collision ghost 15              → TCA 15 s, direct hit
-	 *   skywatch collision ghost 15 300          → miss by 300 m horizontally
-	 *   skywatch collision ghost 15 0   6500     → direct hit but 6500 ft alt
+	 * skywatch collision ghost → default head-on hit
+	 * skywatch collision ghost 15 → TCA 15 s, direct hit
+	 * skywatch collision ghost 15 300 → miss by 300 m horizontally
+	 * skywatch collision ghost 15 0 6500 → direct hit but 6500 ft alt
 	 */
 	double tca_s  = (argc > 1) ? strtod(argv[1], NULL) : -1.0;
 	double miss_m = (argc > 2) ? strtod(argv[2], NULL) : -1.0;
@@ -516,7 +515,7 @@ static int cmd_collision_ghost_stop(const struct shell *sh, size_t argc, char **
 	return 0;
 }
 
-/* Stage 11 — manual CRASH trigger.
+/* manual CRASH trigger.
  *   skywatch collision crash <icao_a> <icao_b>
  * Synthesises a CRASH JSON frame + fires the BLE CRASH frame to Will.
  * Useful for testing the GUI overlay + sim freeze without needing a
@@ -549,10 +548,10 @@ static int cmd_missile_launch(const struct shell *sh, size_t argc, char **argv)
 	 * Pass <=0 for any arg (or omit) to use that arg's default.
 	 *
 	 * Examples:
-	 *   skywatch missile launch                 → ttl=60s turn=15°/s 500kt
-	 *   skywatch missile launch 30              → fast, 30 s TTL
-	 *   skywatch missile launch 90 8            → easier to dodge (turn=8°/s)
-	 *   skywatch missile launch 60 5 300        → slow + ponderous
+	 * skywatch missile launch → ttl=60s turn=15°/s 500kt
+	 * skywatch missile launch 30 → fast, 30 s TTL
+	 * skywatch missile launch 90 8 → easier to dodge (turn=8°/s)
+	 * skywatch missile launch 60 5 300 → slow + ponderous
 	 */
 	double ttl  = (argc > 1) ? strtod(argv[1], NULL) : -1.0;
 	double turn = (argc > 2) ? strtod(argv[2], NULL) : -1.0;

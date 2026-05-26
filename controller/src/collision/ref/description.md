@@ -15,8 +15,8 @@ synthetic-aircraft sandboxes and the geometry-based diversion picker.
 ```
 Δr  = r_a − r_b               (relative position, metres)
 Δv  = v_a − v_b               (relative velocity, m/s)
-t*  = − (Δr · Δv) / |Δv|²     (time to closest approach, s)
-min_sep = | Δr + Δv · t* |    (min separation at t*, m)
+t* = − (Δr · Δv) / |Δv|² (time to closest approach, s)
+min_sep = | Δr + Δv · t* | (min separation at t*, m)
 ```
 
 If `Δv ≈ 0` or `t* < 0` (diverging) the pair is reported with

@@ -1,14 +1,14 @@
 /*
- * SkyWatch controller — periodic DB serialiser onto ACM1 (Stage 5.1).
+ * SkyWatch controller — periodic DB serialiser onto ACM1.
  *
  * Every 500 ms (2 Hz), walks `aircraft_db` and emits one `AircraftFrame`
  * JSON per entry on the ACM1 data port (via `usb_serial_println`). This is
- * the integration handshake the laptop-side GUI (Stage 6) reads.
+ * the integration handshake the laptop-side GUI reads.
  *
  * Wire format: resources/standards/json_protocol.md (`AircraftFrame`).
  * Optional fields (alt/vel/hdg) are *omitted* when their AIRCRAFT_VALID_*
  * bit is clear — never serialised as `null`, matching the contract we set
- * in Stage 2.3.
+ * in .
  */
 
 #ifndef DB_PUBLISHER_H

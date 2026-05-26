@@ -39,7 +39,7 @@ def main():
     time.sleep(0.5)        # give MQTT loop time to connect
 
     scenarios = [
-        # (level,      icao_a,   icao_b,   tca,  sep,  alt_diff)
+        # (level, icao_a, icao_b, tca, sep,  alt_diff)
         ("ADVISORY",  "a1b2c3", "gh05t1", 25.0, 700.0,    0),
         ("WARNING",   "a1b2c3", "gh05t1", 12.0, 380.0,    0),
         ("WARNING",   "a1b2c3", "gh05t1",  8.0, 250.0,  300),
@@ -59,7 +59,7 @@ def main():
             "alt_diff_ft": alt_d,
             "ts":          time.time(),
         }
-        print(f"[test] #{i+1:02d}  {level:<8} {a} ↔ {b}  sep={sep:.0f}m  tca={tca}s")
+        print(f"[test] #{i+1:02d} {level:<8} {a} ↔ {b} sep={sep:.0f}m tca={tca}s")
         mqtt.publish_collision(frame)
         influx.write_collision(frame)
         time.sleep(1.0)

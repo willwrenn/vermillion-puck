@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — USB CDC ACM1 data-port Rx handler (Phase 2.2).
+ * SkyWatch controller — USB CDC ACM1 data-port Rx handler.
  *
  * Architecture:
  *   - IRQ callback (interrupt_handler): drain the UART FIFO into a ring buffer,
@@ -32,16 +32,16 @@
 
 LOG_MODULE_REGISTER(usb_handler, LOG_LEVEL_INF);
 
-#define DATA_UART_NODE      DT_NODELABEL(cdc_acm_uart0)
-#define RINGBUF_BYTES       2048
-#define LINE_BUF_BYTES      512
+#define DATA_UART_NODE DT_NODELABEL(cdc_acm_uart0)
+#define RINGBUF_BYTES 2048
+#define LINE_BUF_BYTES 512
 
 /* 4096 B (was 2048) — every parsed JSON aircraft frame triggers
  * aircraft_db_upsert() which runs Kalman matrix math. See bridge.c
  * for the same reasoning. The original 2048 B stack overflowed once
  * the ADS-B bridge started feeding real traffic. */
-#define RX_THREAD_STACK     4096
-#define RX_THREAD_PRIO      7
+#define RX_THREAD_STACK 4096
+#define RX_THREAD_PRIO 7
 
 static const struct device *const data_uart = DEVICE_DT_GET(DATA_UART_NODE);
 
@@ -126,7 +126,7 @@ static void rx_thread_fn(void *a, void *b, void *c)
 						int err = json_parse_aircraft(line_buf,
 									       line_len, &ac);
 						if (err == 0) {
-							/* Stage 4.2 — feed the DB. */
+							/* feed the DB. */
 							int db_rc = aircraft_db_upsert(&ac);
 							LOG_DBG("RX_JSON %s %s lat=%.6f lon=%.6f valid=0x%x db=%s",
 								ac.icao,

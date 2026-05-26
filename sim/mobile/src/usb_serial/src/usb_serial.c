@@ -1,3 +1,13 @@
+/*
+ * SkyWatch sim mobile — USB-CDC TX helper.
+ *
+ * Wraps `uart_poll_out` over the single CDC ACM port (host-side
+ * /dev/ttyACM0). Position JSON and WARN text lines from `codein.c`
+ * go through here; the Zephyr shell + log backend share the same
+ * port. Multiple producers can call usb_serial_println() — calls
+ * are short and the underlying poll-out path is mutex-free on a
+ * single core, so we don't add our own lock here.
+ */
 #include "usb_serial.h"
 
 #include <string.h>
@@ -8,14 +18,10 @@
 
 LOG_MODULE_REGISTER(usb_serial, LOG_LEVEL_INF);
 
-// ttyACM0 (board_cdc_acm_uart) — shell + logs, assigned via board DTSI
-// zephyr,console = &board_cdc_acm_uart
-// zephyr,shell-uart = &board_cdc_acm_uart
-//
-// ttyACM1 (cdc_acm_uart0) — data-only port defined in app.overlay.
-// JSON position packets are written here directly via uart_poll_out,
-// bypassing the shell/log backend entirely. ttyACM0 sees no JSON;
-// ttyACM1 sees no shell noise or ANSI codes.
+/* Single CDC ACM instance defined in app.overlay (cdc_acm_uart0).
+ * Position JSON + WARN text lines are written here directly via
+ * uart_poll_out so they don't fight the log backend for buffer
+ * space. */
 static const struct device *g_data_uart =
 	DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
 

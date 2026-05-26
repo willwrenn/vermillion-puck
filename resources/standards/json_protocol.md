@@ -2,7 +2,7 @@
 
 **Version:** 1
 **Source of truth (Python):** `json_protocol.py` in this folder
-**Mirror (firmware C):** `vermillion-puck/controller/src/json_parser.c` (Stage 2.3)
+**Mirror (firmware C):** `vermillion-puck/controller/src/json_parser.c`
 **Transport:** USB-CDC ACM (one direction per port; see "Ports" below)
 **Framing:** one JSON object per line, terminated by `\n` (LF). No CR.
 **Encoding:** UTF-8.
@@ -53,7 +53,7 @@ Records without lat/lon are **never emitted** (dropped at the bridge).
 > out; the firmware's parser-return bitmask tells it which optionals were
 > present.
 
-## `CollisionFrame` schema (Stage 8.2)
+## `CollisionFrame` schema
 
 ```json
 {

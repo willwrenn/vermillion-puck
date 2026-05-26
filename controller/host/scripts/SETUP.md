@@ -1,4 +1,4 @@
-# Phase 10 — MQTT + InfluxDB Cloud setup
+# MQTT + InfluxDB Cloud setup
 
 One-time setup so the GUI's MQTT publisher + InfluxDB writer have somewhere
 to send data. After this, `bash scripts/run_skywatch.sh --no-sdr` brings
@@ -10,9 +10,9 @@ up the full pipeline and the InfluxDB Cloud dashboard renders live.
 sudo apt update && sudo apt install -y mosquitto mosquitto-clients
 sudo systemctl enable --now mosquitto
 # Verify:
-mosquitto_sub -t 'skywatch/#' -v &     # subscribes in the background
+mosquitto_sub -t 'skywatch/#' -v & # subscribes in the background
 mosquitto_pub -t skywatch/test -m hello
-# You should see:  skywatch/test hello
+# You should see: skywatch/test hello
 kill %1
 ```
 

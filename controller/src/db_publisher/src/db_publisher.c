@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — periodic DB serialiser onto ACM1 (Stage 5.1).
+ * SkyWatch controller — periodic DB serialiser onto ACM1.
  *
  * Design:
  *   1. 2 Hz `k_work_delayable` schedules itself on the system workqueue.
@@ -29,9 +29,9 @@
 
 LOG_MODULE_REGISTER(db_publisher, LOG_LEVEL_INF);
 
-#define PUBLISH_PERIOD_MS   500            /* 2 Hz */
-#define MAX_SNAPSHOT        AIRCRAFT_DB_MAX_ENTRIES
-#define LINE_CAP            256
+#define PUBLISH_PERIOD_MS 500 /* 2 Hz */
+#define MAX_SNAPSHOT AIRCRAFT_DB_MAX_ENTRIES
+#define LINE_CAP 256
 
 static struct k_work_delayable s_work;
 
@@ -45,7 +45,7 @@ static int               s_snapshot_n;
 // Purpose: This is the callback passed to `aircraft_db_for_each` 
 // to build a snapshot of the current database entries. 
 // The callback copies each entry's `struct aircraft_t` into the `s_snapshot` array,
-//  up to `MAX_SNAPSHOT`. The caller holds the DB mutex while this callback runs.
+// up to `MAX_SNAPSHOT`. The caller holds the DB mutex while this callback runs.
 static bool snapshot_cb(const struct aircraft_db_entry *e, void *user)
 {
 	ARG_UNUSED(user);
@@ -98,7 +98,7 @@ static int format_aircraft_json(char *buf, size_t cap, const struct aircraft_t *
 }
 
 //Purpose: This function is run by the reaper thread.
-//  It iterates over all entries
+// It iterates over all entries
 static void work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);

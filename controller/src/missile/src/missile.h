@@ -12,11 +12,11 @@
  * and the missile then auto-cancels.
  *
  * Lifecycle:
- *   missile_launch()  — kicks off the work-queue pursuit handler.
+ * missile_launch() — kicks off the work-queue pursuit handler.
  *                       Cancels any in-flight missile first.
- *   missile_cancel()  — stops the worker. The DB entry stale-evicts
+ * missile_cancel() — stops the worker. The DB entry stale-evicts
  *                       on its own (~10 s).
- *   internal expiry   — when (k_uptime - launch) >= ttl_s the worker
+ * internal expiry — when (k_uptime - launch) >= ttl_s the worker
  *                       cancels itself (LOG_INF "self-destruct").
  *
  * Wire-format: emitted as a normal `AircraftFrame` (source=FICT) via
@@ -27,17 +27,17 @@
 #define MISSILE_H
 
 /* UQ St Lucia launch site. */
-#define MISSILE_LAUNCH_LAT          -27.4975
-#define MISSILE_LAUNCH_LON           153.0137
-#define MISSILE_LAUNCH_ALT_FT        0       /* surface — climbs to target alt */
+#define MISSILE_LAUNCH_LAT -27.4975
+#define MISSILE_LAUNCH_LON 153.0137
+#define MISSILE_LAUNCH_ALT_FT 0 /* surface — climbs to target alt */
 
 /* Sensible defaults (mirrored in the shell help text). */
-#define MISSILE_DEFAULT_TTL_S        60.0
-#define MISSILE_DEFAULT_TURN_RATE    15.0    /* deg/sec — generous; lower = easier to dodge */
-#define MISSILE_DEFAULT_SPEED_KT     500.0   /* fast enough to chase, slow enough to dodge */
+#define MISSILE_DEFAULT_TTL_S 60.0
+#define MISSILE_DEFAULT_TURN_RATE 15.0 /* deg/sec — generous; lower = easier to dodge */
+#define MISSILE_DEFAULT_SPEED_KT 500.0 /* fast enough to chase, slow enough to dodge */
 
 /* Pursuit tick. 2 Hz keeps the map motion smooth without flooding USB. */
-#define MISSILE_TICK_MS              500
+#define MISSILE_TICK_MS 500
 
 /* Pass <=0 for any arg to use that arg's default. */
 int  missile_launch(double ttl_s, double turn_rate_dps, double speed_kt);

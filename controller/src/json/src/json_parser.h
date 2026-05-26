@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — JSON -> struct aircraft_t deserialiser (Stage 2.3).
+ * SkyWatch controller — JSON -> struct aircraft_t deserialiser.
  *
  * Wire format spec: resources/standards/json_protocol.md
  * Source-of-truth Python module: resources/standards/json_protocol.py

@@ -346,8 +346,8 @@ def _clear_all():
 #
 # The static is a grid of _PIXEL-square rectangles whose fill toggles
 # random black/white every 80 ms — much more "thematic crash" than the
-# original plain-red overlay. Ported from Will's variant in
-# resources/importedcode/Importedgui/willdeathscreen.py.
+# original plain-red overlay. Ported from Will's standalone
+# death-screen prototype.
 _PIXEL = 15 # block size for B&W static
 _crash_items = [] # all canvas items in the overlay
 _crash_px = [] # just the pixel rects (for animation updates)

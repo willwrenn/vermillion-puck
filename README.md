@@ -130,7 +130,7 @@ WSL renumbers ports after every flash. If unsure: `timeout 2 head -c 200 /dev/tt
 Paste once per terminal session **on Laptop B**:
 
 ```bash
-function ac()     { echo -e "aircraft $*\r"        > /dev/ttyACM0; }
+function ac()     { echo -e "aircraft $*\r" > /dev/ttyACM0; }
 function circle() { echo -e "aircraft circle $*\r" > /dev/ttyACM0; }
 ```
 
@@ -239,7 +239,7 @@ JSON
 
 #### string.h
 - `memcpy()`, `memset()` — clearing snap rows + Kalman matrices each tick.
-- `strncpy()`, `strncmp()` — ICAO copy + lookup (always BUF_LEN-1 + explicit NUL after Phase 12 strncpy fix).
+- `strncpy()`, `strncmp()` — ICAO copy + lookup (always BUF_LEN-1 + explicit NUL after a strncpy off-by-one was caught late).
 
 #### stdlib.h
 - `strtod()`, `strtol()` — shell arg parsing for `skywatch collision ghost [tca_s] [miss_m]` etc.
@@ -366,7 +366,7 @@ Used the miniproject Kalman filter design + node_db slist pattern + dual-CDC ACM
 - Threshold structure for ADVISORY (1 km / 60 s) / WARNING (500 m / 30 s) / CRASH (100 m / 100 m horizontal+vertical).
 - Helped write the per-pair transition tracker + the 15-s CRASH lock that prevents oscillation as a missile passes through a frozen sim.
 - Diversion picker (geometry → LEFT/RIGHT/CLIMB/DESCEND/RTB).
-- Predictive CRASH branch for fast-moving missiles that would otherwise pass through the 100 m zone between ticks (added Phase 12 when missiles at 750 kt were missed on first pass).
+- Predictive CRASH branch for fast-moving missiles that would otherwise pass through the 100 m zone between ticks (when missiles at 750 kt were missed on first pass).
 
 ### controller/src/missile/missile.c
 - Pure-pursuit guidance math (desired heading = bearing-to-target, clamped to ±turn_rate × dt).

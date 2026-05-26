@@ -3,8 +3,8 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(skywatch_controller)
 
 # Per-lib source listing. Layout convention: every lib lives at
-#   src/<lib>/src/  (code + private headers)
-#   src/<lib>/ref/  (self-reference description.md)
+# src/<lib>/src/ (code + private headers)
+# src/<lib>/ref/ (self-reference description.md)
 # See resources/organisation/file_layout.md for the full spec.
 
 target_sources(app PRIVATE

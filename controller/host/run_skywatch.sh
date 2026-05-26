@@ -7,24 +7,24 @@
 # everything down cleanly.
 #
 # Run from anywhere — paths resolved relative to this script:
-#     bash controller/host/run_skywatch.sh            # full SDR + GUI
-#     bash controller/host/run_skywatch.sh --no-sdr   # GUI only (no antenna)
+# bash controller/host/run_skywatch.sh # full SDR + GUI
+# bash controller/host/run_skywatch.sh --no-sdr # GUI only (no antenna)
 #
 # Flags / env:
-#     --no-sdr               Skip dump1090 check + don't spawn sdr_bridge.
-#                            Use when the SDR antenna isn't connected.
-#                            (Also via SKYWATCH_NO_SDR=1.)
-#     SKYWATCH_PORT=path     Override auto-detected data port.
-#     SKYWATCH_DUMP1090_URL  Override the default dump1090 JSON endpoint.
-#     SDR_BRIDGE_PY=path     Path to a host-side sdr_bridge.py if you have
-#                            one (the sample ships separately). Required
-#                            only when you want SDR traffic.
-#     INFLUXDB_TOKEN=...     Override the baked-in dashboard token.
+# --no-sdr Skip dump1090 check + don't spawn sdr_bridge.
+# Use when the SDR antenna isn't connected.
+# (Also via SKYWATCH_NO_SDR=1.)
+# SKYWATCH_PORT=path Override auto-detected data port.
+# SKYWATCH_DUMP1090_URL Override the default dump1090 JSON endpoint.
+# SDR_BRIDGE_PY=path Path to a host-side sdr_bridge.py if you have
+# one (the sample ships separately). Required
+# only when you want SDR traffic.
+# INFLUXDB_TOKEN=... Override the baked-in dashboard token.
 #
 # Pre-flight assumptions:
-#     1. Both Xiao boards flashed + USB-attached (controller, optionally sim).
-#     2. Will's mobile is paired via BLE GATT (if you want sim traffic).
-#     3. (--no-sdr mode) you don't have / don't want the dump1090 path.
+# 1. Both Xiao boards flashed + USB-attached (controller, optionally sim).
+# 2. Will's mobile is paired via BLE GATT (if you want sim traffic).
+# 3. (--no-sdr mode) you don't have / don't want the dump1090 path.
 
 set -euo pipefail
 
@@ -116,7 +116,7 @@ if ! python3 -c "import paho.mqtt.client, influxdb_client" 2>/dev/null; then
     echo "  ⚠ Phase-10 deps missing (MQTT/InfluxDB publishing disabled)"
 fi
 
-# 4. Mosquitto (Phase 10 — optional). GUI auto-reconnects either way.
+# 4. Mosquitto (optional). GUI auto-reconnects either way.
 if command -v mosquitto >/dev/null 2>&1; then
     if pgrep -x mosquitto >/dev/null 2>&1; then
         echo "  ✓ mosquitto broker running (127.0.0.1:1883)"

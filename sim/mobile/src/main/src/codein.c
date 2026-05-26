@@ -200,7 +200,7 @@ static void aircraft_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value
 }
 
 // SkyWatch aircraft service — mobile notifies base with ble_aircraft_frame at 5Hz
-// attrs[0]=service  attrs[1]=char-decl  attrs[2]=char-value  attrs[3]=CCCD
+// attrs[0]=service attrs[1]=char-decl attrs[2]=char-value attrs[3]=CCCD
 BT_GATT_SERVICE_DEFINE(
 	skywatch_svc,
 	BT_GATT_PRIMARY_SERVICE(SKY_SVC_UUID),
@@ -375,8 +375,8 @@ static int cmd_aircraft_reset(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-// Shell command: circle <speed_kt> <radius_m>  - fly constant circles
-//                circle 0                       - stop circling
+// Shell command: circle <speed_kt> <radius_m> - fly constant circles
+// circle 0 - stop circling
 static int cmd_aircraft_circle(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc < 2) {

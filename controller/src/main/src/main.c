@@ -1,8 +1,8 @@
 /*
- * SkyWatch controller main — Phase 2.1.
+ * SkyWatch controller main.
  *
- * Stage:    2.1
- * Purpose:  Bring up dual CDC-ACM USB (handled by usb_device.c at SYS_INIT)
+ * Stage: 2.1
+ * Purpose: Bring up dual CDC-ACM USB (handled by usb_device.c at SYS_INIT)
  *           and confirm the data port via usb_serial_init(). After that the
  *           shell runs on ACM0 and main() simply heartbeats so we can see
  *           the board hasn't hung.
@@ -23,13 +23,13 @@
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 /* Heartbeat LED — green LED on the Xiao-BLE (led1 = GPIO0_30, ACTIVE_LOW).
- * Pattern mirrors the mobile sim node (resources/importedcode/Will_BLE/mobile/
- * codein.c:21-25, 585-588): GPIO_DT_SPEC_GET + configure_dt + set_dt. The
- * red LED comes up briefly during init then drops out; green stays solid once
- * init has completed and toggles slowly in the heartbeat loop so a frozen
- * board (LED stuck on or off) is obvious at a glance. */
-#define LED_RED_NODE    DT_ALIAS(led0)
-#define LED_GREEN_NODE  DT_ALIAS(led1)
+ * Pattern mirrors the sim mobile node (sim/mobile/src/main/src/codein.c):
+ * GPIO_DT_SPEC_GET + configure_dt + set_dt. The red LED comes up briefly
+ * during init then drops out; green stays solid once init has completed
+ * and toggles slowly in the heartbeat loop so a frozen board (LED stuck
+ * on or off) is obvious at a glance. */
+#define LED_RED_NODE DT_ALIAS(led0)
+#define LED_GREEN_NODE DT_ALIAS(led1)
 static const struct gpio_dt_spec led_red   = GPIO_DT_SPEC_GET(LED_RED_NODE,   gpios);
 static const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(LED_GREEN_NODE, gpios);
 

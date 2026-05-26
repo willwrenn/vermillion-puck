@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — JSON -> struct aircraft_t deserialiser (Stage 2.3).
+ * SkyWatch controller — JSON -> struct aircraft_t deserialiser.
  *
  * Wire spec: resources/standards/json_protocol.md
  *
@@ -50,17 +50,17 @@ static const struct json_obj_descr ac_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct ac_json, source, JSON_TOK_STRING),     /* 8 */
 };
 
-#define IDX_TYPE   0
-#define IDX_ICAO   1
-#define IDX_LAT    2
-#define IDX_LON    3
-#define IDX_ALT    4
-#define IDX_VEL    5
-#define IDX_HDG    6
-#define IDX_TS     7
+#define IDX_TYPE 0
+#define IDX_ICAO 1
+#define IDX_LAT 2
+#define IDX_LON 3
+#define IDX_ALT 4
+#define IDX_VEL 5
+#define IDX_HDG 6
+#define IDX_TS 7
 #define IDX_SOURCE 8
 
-#define BIT(n)  ((uint64_t)1 << (n))
+#define BIT(n) ((uint64_t)1 << (n))
 #define REQUIRED (BIT(IDX_TYPE) | BIT(IDX_ICAO) | BIT(IDX_LAT) | \
 		  BIT(IDX_LON) | BIT(IDX_TS) | BIT(IDX_SOURCE))
 

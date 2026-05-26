@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — pairwise collision detector (Stages 8.1 + 8.2).
+ * SkyWatch controller — pairwise collision detector.
  *
  * Implementation notes:
  *  - Snapshot pattern (same as db_publisher): take the DB mutex briefly,
@@ -35,10 +35,10 @@
 
 LOG_MODULE_REGISTER(collision, LOG_LEVEL_INF);
 
-#define KF_PI            3.14159265358979323846
-#define DEG_PER_M_LAT    (1.0 / 111000.0)
-#define KT_TO_MPS        0.514444
-#define MAX_TRACKED      32   /* max pairs we keep transition state for */
+#define KF_PI 3.14159265358979323846
+#define DEG_PER_M_LAT (1.0 / 111000.0)
+#define KT_TO_MPS 0.514444
+#define MAX_TRACKED 32 /* max pairs we keep transition state for */
 
 static inline double deg_per_m_lon_at(double lat_deg)
 {
@@ -65,7 +65,7 @@ struct tracked_pair {
 	char     icao_a[AIRCRAFT_ICAO_BUF_LEN];
 	char     icao_b[AIRCRAFT_ICAO_BUF_LEN];
 	enum collision_level level;  /* last reported level (non-CLEAR) */
-	/* Stage 11 — the diversion we suggested when this pair first
+	/* the diversion we suggested when this pair first
 	 * tripped ADVISORY. Persisted so every subsequent JSON frame can
 	 * include it. Empty if no diversion fired. */
 	char     diversion[12];
@@ -89,7 +89,7 @@ static struct collision_stats s_stats;
 static struct k_spinlock      s_stats_lock;
 static struct k_work_delayable s_work;
 
-/* Stage 11 — per-pair diversion direction picked at ADVISORY transition.
+/* per-pair diversion direction picked at ADVISORY transition.
  * Cached so every subsequent re-fire of the DIVERSION frame uses the
  * same suggestion (otherwise the picker's geometry-based output would
  * flip every tick as the threat moves, confusing the operator). */
@@ -104,15 +104,15 @@ static struct k_work_delayable s_inject_keepalive;
 static bool                    s_inject_active;
 static void                    inject_keepalive_handler(struct k_work *work);
 
-/* Stage 8.6 — "ghost" aircraft on intercept with the live BLE_SIM target.
+/* "ghost" aircraft on intercept with the live BLE_SIM target.
  * `start` snapshots the BLE aircraft, picks head-on heading + offset, and
  * arms the keep-alive. Each tick dead-reckons the ghost forward so it
  * actually moves on the GUI. Stops on `collision_ghost_stop()` (natural
  * stale-evict after 10 s). */
-#define GHOST_ICAO            "gh05t1"
-#define GHOST_SPEED_KT        250.0
-#define GHOST_TCA_TARGET_S    23.0       /* default — overridable per-call */
-#define GHOST_TICK_MS         3000
+#define GHOST_ICAO "gh05t1"
+#define GHOST_SPEED_KT 250.0
+#define GHOST_TCA_TARGET_S 23.0 /* default — overridable per-call */
+#define GHOST_TICK_MS 3000
 
 static struct k_work_delayable s_ghost_keepalive;
 static bool                    s_ghost_active;
@@ -166,13 +166,13 @@ static bool derive_velocity_mps(const struct aircraft_db_entry *e,
 		double speed_mps = e->ac.vel_kt * KT_TO_MPS;
 		double hdg = e->ac.hdg_deg * (KF_PI / 180.0);
 		*v_north = speed_mps * cos(hdg);
-		*v_east  = speed_mps * sin(hdg);
+		*v_east = speed_mps * sin(hdg);
 		return true;
 	}
 	/* Fall back to KF only when source didn't report hdg/vel. */
 	if (e->kf.initialised && e->kf.update_count >= 2) {
 		*v_north = e->kf.x[2] / DEG_PER_M_LAT;
-		*v_east  = e->kf.x[3] / deg_per_m_lon_at(e->ac.lat);
+		*v_east = e->kf.x[3] / deg_per_m_lon_at(e->ac.lat);
 		return true;
 	}
 	*v_north = 0.0; *v_east = 0.0;
@@ -205,7 +205,7 @@ static bool snap_cb(const struct aircraft_db_entry *e, void *user)
 struct approach {
 	double  tca_s;
 	double  min_sep_m;       /* PROJECTED at closest approach (or current if past) */
-	double  cur_sep_m;       /* CURRENT Euclidean distance now — Phase 12 */
+	double  cur_sep_m;       /* CURRENT Euclidean distance now */
 	bool    diverging;
 	/* Vertical separation between the pair, in feet. Only meaningful when
 	 * `alt_valid` is set (both aircraft reported altitude). Always current. */
@@ -311,7 +311,7 @@ static void pack_icao24_bytes(const char *icao_hex, uint8_t out[3])
 	}
 }
 
-/* Stage 8.3 — fire Will's legacy warning_frame for one WARNING-level pair.
+/* fire Will's legacy warning_frame for one WARNING-level pair.
  * Called only when lvl==COLLISION_WARNING and the BLE central is connected.
  * We pick the "other" ICAO as the one that's NOT a BLE_SIM aircraft (so
  * Will sees the threat ID, not his own). If both sides are non-BLE we just
@@ -344,7 +344,7 @@ static void send_ble_warning(const char *lo, const char *hi)
 	}
 }
 
-/* Stage 11 — fire a terminal CRASH frame to Will. Sim firmware freezes
+/* fire a terminal CRASH frame to Will. Sim firmware freezes
  * for 10 s, emits "WARN crash" to ttyACM1 (his GUI catches it and shows
  * a full-screen red overlay), then resets to St Lucia origin. */
 static void send_ble_crash(const char *other_icao)
@@ -365,7 +365,7 @@ static void send_ble_crash(const char *other_icao)
 	}
 }
 
-/* Stage 11 — auto-suggest a diversion when a WARNING pair fires.
+/* auto-suggest a diversion when a WARNING pair fires.
  * `other_icao` is the threat (not the SIM). Encodes the chosen
  * diversion as MSG_DIVERSION with hdg_delta (and/or alt) populated;
  * Will's mobile firmware turns by hdg_delta on receipt, and his PC
@@ -450,7 +450,7 @@ static void emit_collision(const char *lo, const char *hi,
 	/* Optional fields built into small inline scratch strings so the main
 	 * snprintf stays readable. Empty string = field omitted.
 	 *
-	 * Phase 12 — emit `actual_sep_m` (current Euclidean distance NOW)
+	 * emit `actual_sep_m` (current Euclidean distance NOW)
 	 * separately from `min_sep_m` (projected closest approach when
 	 * converging; equal to current when diverging). The history dashboard
 	 * minimises over actual_sep_m to record the closest the aircraft
@@ -534,7 +534,7 @@ static void work_handler(struct k_work *work)
 				}
 			}
 
-			/* Stage 11 — CRASH upgrade. Two ways to declare CRASH:
+			/* CRASH upgrade. Two ways to declare CRASH:
 			 *   (a) CURRENT distance is inside the 100 m / 100 m zone
 			 *       — the normal case for slow aircraft (ghosts at
 			 *       250 kt, sim at 60 kt, etc.).
@@ -547,7 +547,7 @@ static void work_handler(struct k_work *work)
 			 *       for things still far away on a future collision
 			 *       course.
 			 *
-			 * Phase 12 — without (b), a 750 kt missile in head-on
+			 * without (b), a 750 kt missile in head-on
 			 * geometry against a 60 kt sim has ~810 kt closure
 			 * (~417 m/s), passing through the 100 m zone in <0.25 s.
 			 * Even at 5 Hz tick (200 ms apart), we'd reliably catch
@@ -690,7 +690,7 @@ static void work_handler(struct k_work *work)
 				}
 			}
 
-			/* Stage 11 — CRASH transition: fire the terminal BLE
+			/* CRASH transition: fire the terminal BLE
 			 * frame + lock the pair so it stops oscillating + auto-
 			 * cancel any missile or ghost in the pair so they don't
 			 * keep flying past the frozen sim. */
@@ -775,13 +775,13 @@ void collision_get_stats(struct collision_stats *out)
  * Geometry: head-on east/west, 6 km apart (off-CBD but both visible),
  * 250 kt each → closing speed ~257 m/s → TCA ≈ 23 s, min_sep ≈ 0 →
  * classifies as WARNING (<500 m, <30 s) rather than ADVISORY. */
-/* Phase 12 — inject state: persistent positions that DEAD-RECKON between
+/* inject state: persistent positions that DEAD-RECKON between
  * keep-alive ticks instead of teleporting back to the starting points.
  * Previously `build_inject_pair` reset lat/lon to fixed values every
  * 3 s, so c011a1/c011b2 never actually converged — they got stuck at
  * ~6 km apart and the operator saw no collision. */
-#define INJECT_SPEED_KT      250.0
-#define INJECT_TICK_MS       1000   /* upsert at 1 Hz so the GUI sees motion */
+#define INJECT_SPEED_KT 250.0
+#define INJECT_TICK_MS 1000 /* upsert at 1 Hz so the GUI sees motion */
 
 static double s_inj_a_lat, s_inj_a_lon;
 static double s_inj_b_lat, s_inj_b_lon;
@@ -870,7 +870,7 @@ int collision_inject_stop(void)
 	return 0;
 }
 
-/* ---- Stage 8.6 — ghost mode ---------------------------------------- */
+/* — ghost mode ---------------------------------------- */
 
 /* Walk the DB and capture the first SRC_BLE_SIM aircraft into *out.
  * Returns true on found. Callback runs under the aircraft_db mutex; keep
@@ -931,7 +931,7 @@ static void ghost_keepalive_handler(struct k_work *work)
 	k_work_reschedule(&s_ghost_keepalive, K_MSEC(GHOST_TICK_MS));
 }
 
-/* Phase 12 — shared ghost-start body. The two public entry points
+/* shared ghost-start body. The two public entry points
  * (`collision_ghost_start` and `collision_ghost_start_at`) pre-populate
  * the target aircraft and then funnel through this. Avoids cut-and-paste
  * + keeps the re-entry teardown + geometry math in one place. */
@@ -1058,7 +1058,7 @@ int collision_ghost_stop(void)
 	return 0;
 }
 
-/* ---- Stage 11 — manual CRASH / DIVERSION test paths ---------------- */
+/* — manual CRASH / DIVERSION test paths ---------------- */
 
 int collision_crash_trigger(const char *icao_a, const char *icao_b)
 {

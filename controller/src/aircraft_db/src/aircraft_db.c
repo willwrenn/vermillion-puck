@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — aircraft database (Stage 4.1).
+ * SkyWatch controller — aircraft database.
  *
  * Direct port of miniproject's `node_db.c`: static pool + sys_slist
  * + k_mutex. Differences from the original:
@@ -39,7 +39,7 @@ static struct aircraft_db_stats s_stats;
 
 
 // Purpose: Unit tests for the aircraft_db.c module. These are in the same file
-//          as the implementation to keep things simple and self-contained. 
+// as the implementation to keep things simple and self-contained. 
 static struct aircraft_db_entry *pool_alloc(void)
 {
 	for (int i = 0; i < AIRCRAFT_DB_MAX_ENTRIES; i++) {
@@ -95,7 +95,7 @@ void aircraft_db_init(void)
 // Purpose: Insert or update an aircraft entry. If an entry with the same ICAO exists, 
 // it is updated with the new data and last_seen_ms is refreshed. 
 // If no entry exists, a new one is allocated from the pool and added to the list.
-//  Returns 1 if inserted, 0 if updated, or a negative error code on failure (e.g. -ENOMEM if the pool is full).
+// Returns 1 if inserted, 0 if updated, or a negative error code on failure (e.g. -ENOMEM if the pool is full).
 int aircraft_db_upsert(const struct aircraft_t *src)
 {
 	if (!src || src->icao[0] == '\0') {
@@ -110,7 +110,7 @@ int aircraft_db_upsert(const struct aircraft_t *src)
 	bool insert = false;
 	if (e) {
 		int64_t prev_ms = e->last_seen_ms;
-		e->ac           = *src;          /* freshest observation wins */
+		e->ac           = *src; /* freshest observation wins */
 		e->last_seen_ms = now_ms;
 		s_stats.updates++;
 		double dt = (now_ms - prev_ms) / 1000.0;
@@ -199,7 +199,7 @@ int aircraft_db_count(void)
 }
 
 // Purpose: Iterate over all entries in the database, calling the provided callback
-//  for each one.
+// for each one.
 void aircraft_db_for_each(aircraft_db_cb_t cb, void *user)
 {
 	if (!cb) return;
@@ -216,7 +216,7 @@ void aircraft_db_for_each(aircraft_db_cb_t cb, void *user)
 }
 
 // Purpose: Get current stats about the database, such as number of inserts,
-//  updates, evictions, etc.
+// updates, evictions, etc.
 void aircraft_db_get_stats(struct aircraft_db_stats *out)
 {
 	k_mutex_lock(&s_mutex, K_FOREVER);
@@ -227,7 +227,7 @@ void aircraft_db_get_stats(struct aircraft_db_stats *out)
 /* --- Stale reaper thread --------------------------------------------- */
 
 #define REAPER_STACK 1024
-#define REAPER_PRIO  8
+#define REAPER_PRIO 8
 #define REAPER_TICK_MS 2000
 
 static K_THREAD_STACK_DEFINE(reaper_stack, REAPER_STACK);

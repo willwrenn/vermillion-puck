@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — aircraft database (Stage 4.1).
+ * SkyWatch controller — aircraft database.
  *
  * In-memory linked-list DB keyed by ICAO. Both producers (`usb_handler`
  * for ADS-B JSON, `bridge` for BLE binary) call `aircraft_db_upsert()`
@@ -24,15 +24,15 @@
 #include "aircraft_t.h"
 #include "kalman.h"
 
-#define AIRCRAFT_DB_MAX_ENTRIES    32
-#define AIRCRAFT_DB_STALE_MS       10000   /* per plan: 10 s */
+#define AIRCRAFT_DB_MAX_ENTRIES 32
+#define AIRCRAFT_DB_STALE_MS 10000 /* per plan: 10 s */
 
 /* Pred is published once the KF has seen at least this many measurements. */
-#define AIRCRAFT_PRED_MIN_UPDATES  3
+#define AIRCRAFT_PRED_MIN_UPDATES 3
 /* How many seconds ahead the published `pred_lat / pred_lon` projects.
  * 60 s @ ~250 kt = ~7.7 km — visible on a ±0.5° (≈55 km) map without being
  * silly. Bump higher for ARTCC-style centre views, lower for terminal. */
-#define AIRCRAFT_PRED_HORIZON_S    60.0
+#define AIRCRAFT_PRED_HORIZON_S 60.0
 
 struct aircraft_db_entry {
 	sys_snode_t          node;

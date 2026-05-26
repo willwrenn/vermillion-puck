@@ -4,7 +4,7 @@
 // Structural pattern adapted from William's earlier `ble_central.c` (the
 // scan + connect + MTU + state-machine discovery + watchdog idea), but the
 // UUIDs and the frame format are now the new protocol. Warning send
-// (controller → mobile) is deferred to Stage 8.3.
+// (controller → mobile) is deferred to .
 
 #include "ble_central.h"
 #include "bridge.h"
@@ -468,7 +468,7 @@ void ble_central_get_stats(struct ble_central_stats *out)
 	}
 }
 
-// Stage 8.3 — push a fully-formed warning_frame (msg_type+icao+...+crc)
+// push a fully-formed warning_frame (msg_type+icao+...+crc)
 // to Will's warning characteristic. WRITE-WITHOUT-RESPONSE: low-latency,
 // no ack roundtrip. Will's mobile validates the CRC and rejects on
 // mismatch (so we must compute it before calling — see ble_warning_crc).

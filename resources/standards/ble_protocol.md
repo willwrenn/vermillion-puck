@@ -2,8 +2,8 @@
 
 **Version:** 1 — confirmed live (sim node + controller). Lock until both sides bump in lockstep.
 **Source of truth (Python):** `ble_protocol.py` in this folder
-**Mirror (firmware C):** `vermillion-puck/controller/src/common/src/ble_packet.h` (single header included by both `ble/` and `bridge/`); also embedded in William's sim node (`resources/importedcode/Will_BLE/mobile/codein.c`).
-**Transport:** BLE GATT characteristic (NOTIFY from sim → controller on the SkyWatch aircraft characteristic; WRITE from controller → sim on the legacy Warning service for Stage 8.3 — different protocol, see Will's `warning_frame`).
+**Mirror (firmware C):** `vermillion-puck/controller/src/common/src/ble_packet.h` (single header included by both `ble/` and `bridge/`); also mirrored on the sim mobile node at `vermillion-puck/sim/mobile/src/common/src/ble_packet.h`.
+**Transport:** BLE GATT characteristic (NOTIFY from sim → controller on the SkyWatch aircraft characteristic; WRITE from controller → sim on the legacy Warning service for different protocol, see Will's `warning_frame`).
 **Service UUID:** `4d8a4011-7f24-43c4-9c5b-a17c7af70001` (primary, advertised by sim node and in scan response).
 **Aircraft char UUID:** `4d8a4011-7f24-43c4-9c5b-a17c7af70002` (NOTIFY).
 **Sim node device name:** `skywatch-sim`.
@@ -41,10 +41,10 @@ fields in this exact order produces the same layout on Cortex-M.
 
 enum aircraft_source { SRC_ADS_B = 0, SRC_BLE_SIM = 1 };
 
-#define FLAG_ON_GROUND  (1u << 0)
-#define FLAG_ALT_VALID  (1u << 1)
-#define FLAG_VEL_VALID  (1u << 2)
-#define FLAG_HDG_VALID  (1u << 3)
+#define FLAG_ON_GROUND (1u << 0)
+#define FLAG_ALT_VALID (1u << 1)
+#define FLAG_VEL_VALID (1u << 2)
+#define FLAG_HDG_VALID (1u << 3)
 
 struct __packed ble_aircraft_frame {
     uint8_t  source;
@@ -77,5 +77,5 @@ _Static_assert(sizeof(struct ble_aircraft_frame) == 38, "BLE frame must be 38B")
 `PROTOCOL_VERSION = 1` in `ble_protocol.py`. Any change to the byte map,
 field semantics, or flag definitions must bump the version and update **both**
 files in the same commit. The firmware `__packed` struct lives in
-`vermillion-puck/controller/src/ble_central.h` (Stage 3.1) and must match this
+`vermillion-puck/controller/src/ble_central.h` and must match this
 file exactly.

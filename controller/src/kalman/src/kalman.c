@@ -1,5 +1,5 @@
 /*
- * SkyWatch controller — Kalman filter implementation (Stage 7.2).
+ * SkyWatch controller — Kalman filter implementation.
  *
  * Implements the algorithm specified by scripts/stage7/kalman_proto.py.
  * Hand-rolled doubles, row-major matrices. All inline.
@@ -21,8 +21,8 @@
 #include <zephyr/kernel.h>
 
 /* Geo conversion constants matching kalman_proto.py exactly. */
-#define DEG_PER_M_LAT   (1.0 / 111000.0)
-#define KF_PI           3.14159265358979323846
+#define DEG_PER_M_LAT (1.0 / 111000.0)
+#define KF_PI 3.14159265358979323846
 static inline double deg_per_m_lon_at(double lat_deg)
 {
 	return 1.0 / (111000.0 * cos(lat_deg * (KF_PI / 180.0)));
@@ -141,9 +141,9 @@ void kalman_update(struct kalman_state *s, double meas_lat, double meas_lon)
 	 * shape we can do all the gain math by hand on a 2x2 inverse and skip
 	 * the general MxN linear-algebra routines.
 	 *
-	 *   y = z - H x   (Mx1)
-	 *   S = H P Hᵀ + R   (MxM = 2x2; this is just the top-left 2x2 of P + R)
-	 *   K = P Hᵀ S⁻¹   (NxM = 4x2; this is the first two columns of P scaled by S⁻¹)
+	 * y = z - H x (Mx1)
+	 * S = H P Hᵀ + R (MxM = 2x2; this is just the top-left 2x2 of P + R)
+	 * K = P Hᵀ S⁻¹ (NxM = 4x2; this is the first two columns of P scaled by S⁻¹)
 	 *   x = x + K y
 	 *   P = (I - K H) P
 	 */
@@ -154,7 +154,7 @@ void kalman_update(struct kalman_state *s, double meas_lat, double meas_lon)
 	const double R00 = r_lat * r_lat;
 	const double R11 = r_lon * r_lon;
 
-	/* y = z - Hx  (2-vector). */
+	/* y = z - Hx (2-vector). */
 	const double y0 = meas_lat - s->x[0];
 	const double y1 = meas_lon - s->x[1];
 

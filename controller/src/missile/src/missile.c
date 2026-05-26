@@ -29,12 +29,18 @@
 
 LOG_MODULE_REGISTER(missile, LOG_LEVEL_INF);
 
-#define M_PI_LOC          3.14159265358979323846
-#define DEG_PER_M_LAT     (1.0 / 111000.0)
-#define KT_TO_MPS         0.514444
-#define MISSILE_ICAO      "m1s51l"
+#define M_PI_LOC 3.14159265358979323846
+#define DEG_PER_M_LAT (1.0 / 111000.0)
+#define KT_TO_MPS 0.514444
+#define MISSILE_ICAO "m1s51l"
 
-/* Stage 11 — the missile no longer self-cancels on proximity. The
+/* Vertical-climb rate the missile applies toward target altitude. Tuned
+ * aggressive so altitude alone can't trivially defeat the pursuit; if
+ * lowered, the predictive-CRASH branch in collision.c still catches the
+ * missile on the first horizontal pass at default speeds. */
+#define MISSILE_CLIMB_RATE_FT_PER_S 2000.0
+
+/* the missile no longer self-cancels on proximity. The
  * collision detector's CRASH event (100 m horiz + 100 m vert — see
  * collision.h) is the single source of truth for what counts as a "hit",
  * and collision.c calls missile_cancel() on the transition so the
@@ -126,7 +132,7 @@ static void worker_handler(struct k_work *work)
 	} else {
 		/* Bearing from missile to target, in degrees true (0..360). */
 		double dn = (tgt.lat - s_lat) / DEG_PER_M_LAT;            /* metres north */
-		double de = (tgt.lon - s_lon) / deg_per_m_lon_at(s_lat);  /* metres east  */
+		double de = (tgt.lon - s_lon) / deg_per_m_lon_at(s_lat);  /* metres east */
 		double desired_hdg = atan2(de, dn) * (180.0 / M_PI_LOC);
 		if (desired_hdg < 0.0) desired_hdg += 360.0;
 
@@ -140,7 +146,7 @@ static void worker_handler(struct k_work *work)
 		 * rate so altitude alone can't trivially defeat the missile. */
 		if (tgt.valid_mask & AIRCRAFT_VALID_ALT) {
 			int32_t target_alt = tgt.alt_ft;
-			int32_t alt_step   = (int32_t)(2000.0 * dt);   /* 2000 ft/s — aggressive */
+			int32_t alt_step   = (int32_t)(MISSILE_CLIMB_RATE_FT_PER_S * dt);
 			if      (s_alt_ft < target_alt - alt_step) s_alt_ft += alt_step;
 			else if (s_alt_ft > target_alt + alt_step) s_alt_ft -= alt_step;
 			else                                       s_alt_ft  = target_alt;

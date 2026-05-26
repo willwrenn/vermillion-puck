@@ -1,15 +1,15 @@
 /*
- * SkyWatch controller — BLE binary frame -> aircraft_t bridge (Stage 3.3).
+ * SkyWatch controller — BLE binary frame -> aircraft_t bridge.
  *
  * See ref/description.md for design context.
  *
  * Architecture:
- *   ble notify_cb  ──┐
+ * ble notify_cb ──┐
  *   skywatch inject ─┴── bridge_submit_frame() ── k_msgq ── bridge_thread
  *                                                          │
  *                                                          ▼
- *                                       bridge_convert() ──▶  LOG_INF (3.3)
- *                                                          (Stage 4.2 → db_upsert)
+ * bridge_convert() ──▶ LOG_INF (3.3)
+ * (→ db_upsert)
  *
  * bridge_convert() is the only place that knows how to translate
  * `ble_aircraft_frame` into `aircraft_t`. It's exposed so that
@@ -28,14 +28,14 @@
 
 LOG_MODULE_REGISTER(bridge, LOG_LEVEL_INF);
 
-#define BRIDGE_QUEUE_DEPTH   8
+#define BRIDGE_QUEUE_DEPTH 8
 /* 4096 B (was 2048) — aircraft_db_upsert() drives Kalman matrix math
  * and snprintf'd log lines, and the original 2048 B stack overflowed
  * silently the moment Will's mobile started pushing BLE notifications.
  * HW_STACK_PROTECTION (see prj.conf) now catches any future regression
  * with a visible oops instead of a wedged heartbeat LED. */
-#define BRIDGE_STACK         4096
-#define BRIDGE_PRIO          7
+#define BRIDGE_STACK 4096
+#define BRIDGE_PRIO 7
 
 K_MSGQ_DEFINE(bridge_msgq, sizeof(struct ble_aircraft_frame),
 	      BRIDGE_QUEUE_DEPTH, 4);
@@ -92,7 +92,7 @@ int bridge_convert(const struct ble_aircraft_frame *in, struct aircraft_t *out)
 
 /* ---- Producer side: called from BLE notify callback ------------------ */
 //Purpose: This function is called from the BLE notify callback
-//  when a new frame is received.
+// when a new frame is received.
 void bridge_submit_frame(const struct ble_aircraft_frame *frame)
 {
 	if (!frame) {
@@ -122,7 +122,7 @@ static void bridge_thread_fn(void *a, void *b, void *c)
 		}
 		K_SPINLOCK(&stats_lock) { g_stats.converted++; }
 
-		/* Stage 4.2 — feed the DB. */
+		/* feed the DB. */
 		int db_rc = aircraft_db_upsert(&out);
 		LOG_DBG("RX_BLE %s %s lat=%.6f lon=%.6f valid=0x%x db=%s",
 			out.icao, aircraft_source_str(out.source),
@@ -133,7 +133,7 @@ static void bridge_thread_fn(void *a, void *b, void *c)
 }
 
 //Pur[pse: Spawn the bridge thread. This is called at SYS_INIT
-//  after the kernel is up.]
+// after the kernel is up.]
 K_THREAD_DEFINE(bridge_tid, BRIDGE_STACK, bridge_thread_fn,
 		NULL, NULL, NULL, BRIDGE_PRIO, 0, 0);
 

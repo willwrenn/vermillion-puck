@@ -2,7 +2,7 @@
 
 This document describes how the Zephyr controller (`vermillion-puck/controller/`)
 merges two heterogeneous tracking streams into a single, query-able aircraft
-database. It's the contract Stage 4.2 ("Dual-source data fusion") implements.
+database. It's the contract the controller's dual-source data fusion path implements.
 
 ## Inputs
 
@@ -12,16 +12,16 @@ database. It's the contract Stage 4.2 ("Dual-source data fusion") implements.
 | **BLE-Sim** (simulated aircraft from William's node) | BLE GATT notify | `ble_aircraft_frame` binary, 38 B | 5 Hz × N aircraft | `ble_protocol.md` |
 
 Both arrive **at the same node** (the Xiao-nRF52840 controller) and both must
-end up in the same in-memory store: `aircraft_db` (Stage 4.1, ported from
-`node_db.c/h`).
+end up in the same in-memory store: `aircraft_db` (ported from the
+CSSE4011 miniproject's `node_db.c/h`).
 
 ## Output
 
 | Sink | Format | Cadence |
 |---|---|---|
 | ATC GUI (laptop) | `AircraftFrame` JSON on ACM1 Tx | 2 Hz, one frame per DB entry per tick |
-| Collision detector (Stage 8) | direct in-memory read | event-driven, on each `db_upsert` |
-| MQTT (Stage 9) | `AircraftFrame` JSON on `skywatch/aircraft` | 1 Hz, batched |
+| Collision detector | direct in-memory read | event-driven, on each `db_upsert` |
+| MQTT | `AircraftFrame` JSON on `skywatch/aircraft` | 1 Hz, batched |
 
 ## Fusion model
 
@@ -31,8 +31,8 @@ keyed by 24-bit ICAO address.
 ### Steps per incoming observation
 
 1. **Decode** into a transient `struct aircraft_t` (the common in-memory shape).
-   - JSON path: `json_parser.c` (Stage 2.3) fills the struct from a JSON line.
-   - BLE path:  `ble_central.c` notify callback (Stage 3.3) `memcpy`s the
+   - JSON path: `json_parser.c` fills the struct from a JSON line.
+   - BLE path:  `ble_central.c` notify callback `memcpy`s the
      38-byte packed frame, then expands into `aircraft_t` with the same
      `source` enum but value `SRC_BLE_SIM`.
 2. **Validate** per the source spec (lat/lon range, ICAO ≤ 24-bit, etc.).
@@ -51,7 +51,7 @@ When the same ICAO is reported by both sources within the stale window, the
 Rationale:
 - Blending two independent estimates needs covariance, which we don't have
   for the sim node's "ground-truth" packets. Picking the freshest is a clean
-  invariant the Kalman filter (Stage 7) can sit on top of.
+  invariant the Kalman filter can sit on top of.
 - The Kalman filter still smooths position over time, so source-flapping in
   the raw stream is absorbed before it reaches the GUI/collision logic.
 - The `source` field on each DB entry tells operators which transport last
@@ -70,7 +70,7 @@ Both the JSON parser thread and the BLE notify dispatcher call `db_upsert()`.
 The single `k_mutex` in `aircraft_db.c` (kept verbatim from `node_db.c`)
 serialises them. The collision detector reads under the same mutex.
 
-## Test expectations (Stage 4.2 success criteria)
+## Test expectations (success criteria)
 
 - With `sdr_bridge.py` and the sim node both running, `db dump` shell
   command shows entries with both `source: ADS_B` and `source: BLE_SIM`

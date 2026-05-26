@@ -48,7 +48,7 @@ skywatch missile cancel
 | Default     | `skywatch missile launch 60 15 500`   |
 | Hard mode   | `skywatch missile launch 30 25 750`   |
 
-Hard mode is what justified the Phase 12 predictive-CRASH branch +
+Hard mode is what justified the predictive-CRASH branch +
 the 5 Hz collision tick — 750 kt closing covers ~77 m per 200 ms
 and would otherwise pass through the 100 m CRASH zone between
 ticks.
