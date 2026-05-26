@@ -1,22 +1,30 @@
 # shell
 
-**Role:** Zephyr shell command tree under the `skywatch` root, exposed over
-USB CDC ACM0 (board-default `zephyr,shell-uart`).
+**Role:** Zephyr shell command tree under the `skywatch` root,
+exposed over USB CDC ACM0 (board-default `zephyr,shell-uart`).
 
 **Files:** `src/shell.c`
 
-**Current commands:**
-| Command | Purpose |
+**Subcommand groups:**
+
+| Group | Purpose |
 |---|---|
 | `skywatch ping` | Replies `pong`. Liveness check. |
-| `skywatch usb stats` | Prints `bytes_rx / frames_rx / ringbuf_drops / line_overruns / parse_errors` counters from `usb_handler`. |
-| `skywatch test_json` | Parses two hardcoded ADS-B JSON samples through `json_parser` and prints every field, exercising both the all-fields-present and optionals-absent paths. |
+| `skywatch ble {stats,scan,disconnect,inject}` | BLE central state + manual scan controls + frame injection for offline test. |
+| `skywatch db {dump,count,clear}` | Aircraft DB walk + entry count + wipe. |
+| `skywatch collision {stats,inject,stop,crash,ghost,ghost_at,ghost_stop}` | Collision detector counters + synthetic-scenario hooks (head-on pair, ghost targeting BLE sim or any ICAO, manual CRASH trigger). |
+| `skywatch missile {launch,cancel}` | Pure-pursuit guided-missile sandbox at the BLE sim. |
+| `skywatch diversion <left\|right\|climb\|descend\|rtb\|hold>` | Manually fire a diversion suggestion to the sim. |
+| `skywatch kalman {q,r,bench}` | Tune process / measurement noise; benchmark 1000 predict+update iterations. |
+| `skywatch usb stats` | Data-port Rx counters from `usb_handler`. |
+| `skywatch test_json` | Parse two hardcoded ADS-B JSON samples through `json_parser` — in-tree smoke test. |
 
-**Convention:** every command sits under the `skywatch` root command using
-`SHELL_STATIC_SUBCMD_SET_CREATE` + `SHELL_CMD`. Group related commands into a
-sub-tree (see `sub_usb`).
+**Convention:** every command sits under the `skywatch` root using
+`SHELL_STATIC_SUBCMD_SET_CREATE` + `SHELL_CMD`. Group related
+commands into a sub-tree (e.g. `sub_collision`, `sub_ble`).
 
-**Adding a new subcommand:** drop a `cmd_skywatch_*` function in `shell.c`,
-register it under the `skywatch` tree. If the new feature has its own state,
-expose a tiny accessor in the owning lib (e.g. `usb_handler_get_stats()`) and
-keep `shell.c` thin.
+**Adding a new subcommand:** drop a `cmd_skywatch_*` function in
+`shell.c`, register it under the appropriate sub-tree. If the new
+feature has its own state, expose a tiny accessor in the owning lib
+(e.g. `usb_handler_get_stats()`, `collision_get_stats()`) and keep
+`shell.c` thin.
